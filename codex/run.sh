@@ -31,6 +31,10 @@ fi
 # parent bind mount carries it into the container (see below for rationale).
 STAGED_DEVOPS_AGENT_PATH=""
 
+# Tempfile holding a synthesized /etc/passwd for the macOS host uid; see
+# the passwd-synthesis block further below.
+HOST_PASSWD_FILE=""
+
 cleanup() {
   if [[ -n "${DEVTOOLS_PROXY_PID:-}" ]]; then
     kill "$DEVTOOLS_PROXY_PID" >/dev/null 2>&1 || true
@@ -43,6 +47,9 @@ cleanup() {
   fi
   if [[ -n "$STAGED_DEVOPS_AGENT_PATH" && -f "$STAGED_DEVOPS_AGENT_PATH" ]]; then
     rm -f -- "$STAGED_DEVOPS_AGENT_PATH"
+  fi
+  if [[ -n "$HOST_PASSWD_FILE" && -f "$HOST_PASSWD_FILE" ]]; then
+    rm -f -- "$HOST_PASSWD_FILE"
   fi
 }
 trap cleanup EXIT
@@ -104,6 +111,16 @@ elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
   )
 fi
 
+# Forward the host's ssh known_hosts so `git push` / `ssh` inside the
+# container can verify remote host keys without prompting. The container
+# image's $CONTAINER_HOME is owned by the image's `node` user (uid 1000),
+# so the host-uid-mapped process can't create ~/.ssh itself; bind-mounting
+# the file directly lets Docker create the parent ~/.ssh as part of the
+# mount setup.
+if [[ -f "$HOME/.ssh/known_hosts" ]]; then
+  SSH_ARGS+=(-v "$HOME/.ssh/known_hosts:$CONTAINER_HOME/.ssh/known_hosts:ro")
+fi
+
 IMAGE_CREATED_AT="$(docker image inspect --format '{{.Created}}' "$IMAGE" 2>/dev/null || true)"
 if [[ -z "$IMAGE_CREATED_AT" ]]; then
   IMAGE_NEEDS_BUILD=1
@@ -119,6 +136,27 @@ fi
 
 if [[ "$IMAGE_NEEDS_BUILD" == 1 ]]; then
   docker build -t "$IMAGE" "$SCRIPT_DIR"
+fi
+
+# Synthesize an /etc/passwd entry for the host uid.
+#
+# Linux: the host uid typically matches a real entry on the host already,
+# and ssh/git inside the container are happy. Nothing to do.
+#
+# macOS (Docker Desktop): the macOS host uid (usually 501) has no entry in
+# the container's /etc/passwd, which only ships `node:1000`. ssh refuses
+# to run with "No user exists for uid 501" before it can even read
+# $SSH_AUTH_SOCK, so `git push` over ssh fails. Bind-mount a synthesized
+# passwd file that has the image's stock entries plus an extra one mapping
+# the host uid to $CONTAINER_HOME (the home the rest of the script already
+# treats as ours via -e HOME).
+PASSWD_ARGS=()
+if [[ "$HOST_OS" == "Darwin" ]]; then
+  HOST_PASSWD_FILE="$(mktemp "${TMPDIR:-/tmp}/codex-passwd.XXXXXX")"
+  docker run --rm "$IMAGE" cat /etc/passwd > "$HOST_PASSWD_FILE"
+  printf 'hostuser:x:%s:%s:host user:%s:/bin/bash\n' \
+    "$(id -u)" "$(id -g)" "$CONTAINER_HOME" >> "$HOST_PASSWD_FILE"
+  PASSWD_ARGS=(-v "$HOST_PASSWD_FILE:/etc/passwd:ro")
 fi
 
 # Back the user's config up, then mutate it in place. The Docker Desktop
@@ -274,6 +312,7 @@ docker run --rm -it \
   -w "$HOST_WORKSPACE" \
   -v "$CODEX_DIR:$CODEX_CONTAINER_DIR" \
   ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
+  ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
   -e HOME="$CONTAINER_HOME" \
   -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
   -e NPM_CONFIG_CACHE=/tmp/npm-cache \

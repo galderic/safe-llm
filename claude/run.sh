@@ -21,6 +21,10 @@ GITHUB_AUTH_ARGS=(
 # host's normal Keychain-based auth state is left untouched.
 STAGED_CREDENTIALS_PATH=""
 
+# Tempfile holding a synthesized /etc/passwd for the macOS host uid; see
+# the passwd-synthesis block further below.
+HOST_PASSWD_FILE=""
+
 cleanup() {
     if [[ -n "${DEVTOOLS_PROXY_PID:-}" ]]; then
         kill "$DEVTOOLS_PROXY_PID" >/dev/null 2>&1 || true
@@ -28,6 +32,9 @@ cleanup() {
     rm -f -- "$CLAUDE_CONFIG_FILE"
     if [[ -n "$STAGED_CREDENTIALS_PATH" && -f "$STAGED_CREDENTIALS_PATH" ]]; then
         rm -f -- "$STAGED_CREDENTIALS_PATH"
+    fi
+    if [[ -n "$HOST_PASSWD_FILE" && -f "$HOST_PASSWD_FILE" ]]; then
+        rm -f -- "$HOST_PASSWD_FILE"
     fi
 }
 trap cleanup EXIT
@@ -267,6 +274,36 @@ fi
 
 if [[ -f "$HOME/.gitconfig" ]]; then
     DOCKER_MOUNT_ARGS+=(-v "$HOME/.gitconfig":/home/claude/.gitconfig:ro)
+fi
+
+# Forward the host's ssh known_hosts so `git push` / `ssh` inside the
+# container can verify remote host keys without prompting. The container
+# image's /home/claude is owned by the image's `claude` user (uid 1000),
+# so the host-uid-mapped process can't create ~/.ssh itself; bind-mounting
+# the file directly lets Docker create the parent ~/.ssh as part of the
+# mount setup.
+if [[ -f "$HOME/.ssh/known_hosts" ]]; then
+    DOCKER_MOUNT_ARGS+=(-v "$HOME/.ssh/known_hosts":/home/claude/.ssh/known_hosts:ro)
+fi
+
+# Synthesize an /etc/passwd entry for the host uid.
+#
+# Linux: the host uid typically matches a real entry on the host already,
+# and ssh/git inside the container are happy. Nothing to do.
+#
+# macOS (Docker Desktop): the macOS host uid (usually 501) has no entry in
+# the container's /etc/passwd, which only ships `claude:1000`. ssh refuses
+# to run with "No user exists for uid 501" before it can even read
+# $SSH_AUTH_SOCK, so `git push` over ssh fails. Bind-mount a synthesized
+# passwd file that has the image's stock entries plus an extra one mapping
+# the host uid to /home/claude (the home the rest of the script already
+# treats as ours via -e HOME and the .claude bind mounts).
+if [[ "$HOST_OS" == "Darwin" ]]; then
+    HOST_PASSWD_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-passwd.XXXXXX")"
+    docker run --rm "$IMAGE" cat /etc/passwd > "$HOST_PASSWD_FILE"
+    printf 'hostuser:x:%s:%s:host user:/home/claude:/bin/bash\n' \
+        "$(id -u)" "$(id -g)" >> "$HOST_PASSWD_FILE"
+    DOCKER_MOUNT_ARGS+=(-v "$HOST_PASSWD_FILE":/etc/passwd:ro)
 fi
 
 docker run -it --rm \
