@@ -79,7 +79,22 @@ sed_inplace() {
   fi
 }
 
-if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+# Forward the host's ssh-agent into the container.
+#
+# Linux: bind-mount the agent socket pointed to by $SSH_AUTH_SOCK directly.
+#
+# macOS (Docker Desktop): the host's launchd agent socket lives outside the
+# VM and isn't reachable from a bind mount. Docker Desktop instead exposes
+# the host agent at the magic path /run/host-services/ssh-auth.sock — that
+# path doesn't exist on the host filesystem; Docker Desktop intercepts the
+# -v source and synthesizes the socket inside the container. Requires keys
+# loaded on the host (`ssh-add -l`).
+if [[ "$HOST_OS" == "Darwin" ]]; then
+  SSH_ARGS=(
+    -v /run/host-services/ssh-auth.sock:/ssh-agent
+    -e SSH_AUTH_SOCK=/ssh-agent
+  )
+elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
   SSH_ARGS=(
     -v "$SSH_AUTH_SOCK:/ssh-agent"
     -e SSH_AUTH_SOCK=/ssh-agent
