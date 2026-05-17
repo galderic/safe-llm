@@ -255,7 +255,9 @@ fi
 # loaded on the host (`ssh-add -l`).
 if [[ "$HOST_OS" == "Darwin" ]]; then
     DOCKER_MOUNT_ARGS+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
-    SSH_ENV_ARGS=(-e SSH_AUTH_SOCK=/ssh-agent)
+    # Docker Desktop synthesizes the socket as root:root 0660, so the
+    # --user-mapped container uid needs the root group to open it.
+    SSH_ENV_ARGS=(-e SSH_AUTH_SOCK=/ssh-agent --group-add 0)
 elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     DOCKER_MOUNT_ARGS+=(-v "$SSH_AUTH_SOCK":/ssh-agent)
     SSH_ENV_ARGS=(-e SSH_AUTH_SOCK=/ssh-agent)
