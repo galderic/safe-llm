@@ -18,7 +18,7 @@ RUN apt-get update \
     socat \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex chrome-devtools-mcp@latest
 
 RUN mkdir -p /home/node/.codex \
   && chown -R node:node /home/node/.codex
