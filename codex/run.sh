@@ -10,8 +10,6 @@ PROJECT_NAME="$(basename "$HOST_WORKSPACE" | tr '[:upper:]' '[:lower:]' | tr -c 
 IMAGE="codex-sandbox"
 CONTAINER_HOME="${DEV_CONTAINER_HOME:-/home/node}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
-CODEX_CONFIG_FILE="$CODEX_DIR/config.toml"
-CODEX_CONFIG_BACKUP="$CODEX_DIR/config.toml.safellm-bak-$$"
 CODEX_CONTAINER_DIR="$CODEX_DIR"
 NODE_MODULES_VOLUME="${DEV_CONTAINER_NODE_MODULES_VOLUME:-${PROJECT_NAME}-node-modules}"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
@@ -19,28 +17,12 @@ DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9223}"
 CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS:-When browser automation is needed, prefer the chrome-devtools MCP server directly when its tools are available. Do not route browser work through the Browser plugin or browser skill unless a higher-priority instruction explicitly requires it.}"
 SSH_ARGS=()
 setup_github_auth_args
-CONTAINER_CMD=("$@")
-
-if [[ "$#" -eq 0 ]]; then
-  CONTAINER_CMD=(
-    codex
-    -c "developer_instructions=\"$CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS\""
-    --dangerously-bypass-approvals-and-sandbox
-    -C "$HOST_WORKSPACE"
-  )
-fi
 
 # Path under $HOME/.codex where the devops subagent prompt is staged so the
 # parent bind mount carries it into the container (see below for rationale).
 STAGED_DEVOPS_AGENT_PATH=""
 
 cleanup() {
-  # Restore the user's original config.toml from the backup we made before
-  # mutating it. If the backup is missing (script aborted before backup),
-  # there's nothing to do.
-  if [[ -f "$CODEX_CONFIG_BACKUP" ]]; then
-    mv -f -- "$CODEX_CONFIG_BACKUP" "$CODEX_CONFIG_FILE"
-  fi
   if [[ -n "$STAGED_DEVOPS_AGENT_PATH" && -f "$STAGED_DEVOPS_AGENT_PATH" ]]; then
     rm -f -- "$STAGED_DEVOPS_AGENT_PATH"
   fi
@@ -52,65 +34,50 @@ setup_ssh_args "$CONTAINER_HOME"
 ensure_image_current "$IMAGE" "$SCRIPT_DIR"
 setup_host_passwd_args "$IMAGE" "$CONTAINER_HOME" codex
 
-# Back the user's config up, then mutate it in place. The Docker Desktop
-# virtiofs driver refuses to nest-mount a tempfile inside the parent
-# $HOME/.codex bind mount, so we have to edit the real file and restore it
-# from the backup on exit (see cleanup()).
-cp "$CODEX_CONFIG_FILE" "$CODEX_CONFIG_BACKUP"
-
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 
-# Ensure Codex has a chrome-devtools MCP entry for this sandbox session. If
-# the user already has one, normalize it to the preinstalled binary and the
-# host-browser URL selected above; otherwise append a complete temporary entry.
-if ! grep -q '^\[mcp_servers\.chrome-devtools\]$' "$CODEX_CONFIG_FILE"; then
-  cat >> "$CODEX_CONFIG_FILE" <<EOF
+CODEX_CONFIG_OVERRIDES=(
+  -c "developer_instructions=\"$CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS\""
+  -c 'mcp_servers.chrome-devtools.enabled=true'
+  -c 'mcp_servers.chrome-devtools.required=false'
+  -c 'mcp_servers.chrome-devtools.command="chrome-devtools-mcp"'
+  -c "mcp_servers.chrome-devtools.args=[\"--browser-url=${DEVTOOLS_BROWSER_URL}\"]"
+  -c 'mcp_servers.chrome-devtools.env={ NPM_CONFIG_CACHE = "/tmp/npm-cache" }'
+)
 
-[mcp_servers.chrome-devtools]
-command = "chrome-devtools-mcp"
-args = ["--browser-url=${DEVTOOLS_BROWSER_URL}"]
-
-[mcp_servers.chrome-devtools.env]
-NPM_CONFIG_CACHE = "/tmp/npm-cache"
-EOF
-else
-  sed_inplace -E "s#--browser-url=http://[^\" ]+#--browser-url=${DEVTOOLS_BROWSER_URL}#g" "$CODEX_CONFIG_FILE"
-  sed_inplace '/^\[mcp_servers\.chrome-devtools\]$/,/^\[/ s/^command = "npx"$/command = "chrome-devtools-mcp"/' "$CODEX_CONFIG_FILE"
-  sed_inplace -E '/^\[mcp_servers\.chrome-devtools\]$/,/^\[/ s#^args = \["-y", "chrome-devtools-mcp(@latest)?", ("--browser-url=[^"]+")\]#args = [\2]#' "$CODEX_CONFIG_FILE"
-  if ! grep -q '^\[mcp_servers\.chrome-devtools\.env\]$' "$CODEX_CONFIG_FILE"; then
-    {
-      echo
-      echo "[mcp_servers.chrome-devtools.env]"
-    } >> "$CODEX_CONFIG_FILE"
-  fi
-  sed_inplace '/^\[mcp_servers\.chrome-devtools\.env\]$/,/^\[/ {
-    /^\[mcp_servers\.chrome-devtools\.env\]$/! {
-      /^NPM_CONFIG_CACHE = /d
-    }
-  }' "$CODEX_CONFIG_FILE"
-  sed_inplace '/^\[mcp_servers\.chrome-devtools\.env\]$/a\
-NPM_CONFIG_CACHE = "/tmp/npm-cache"
-' "$CODEX_CONFIG_FILE"
-fi
-
-# Register a devops-only subagent. Its system prompt lives in
-# codex/agents/devops.md (alongside this script). We can't nest-mount that
-# file inside the container's $CODEX_DIR — Docker Desktop's virtiofs
-# refuses to create a mountpoint inside an already-virtiofs-mounted
-# directory — so stage it as a real file in $HOME/.codex/agents/ and let
-# the parent bind mount carry it in. Cleaned up on exit so the host's
-# ~/.codex is left untouched.
-DEVOPS_AGENT_CONTAINER_PATH="$CODEX_CONTAINER_DIR/agents/devops.md"
+# Register a devops-only subagent as a standalone custom-agent TOML file.
+# The parent $CODEX_DIR bind mount carries it into the container, and cleanup
+# removes it from the host after the session.
 mkdir -p "$CODEX_DIR/agents"
-STAGED_DEVOPS_AGENT_PATH="$CODEX_DIR/agents/devops.md"
-cp "$SCRIPT_DIR/agents/devops.md" "$STAGED_DEVOPS_AGENT_PATH"
-cat >> "$CODEX_CONFIG_FILE" <<EOF
+STAGED_DEVOPS_AGENT_PATH="$CODEX_DIR/agents/devops.toml"
+python3 - "$SCRIPT_DIR/agents/devops.md" "$STAGED_DEVOPS_AGENT_PATH" <<'PY'
+import json
+import pathlib
+import sys
 
-[agents.devops]
-description = "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."
-instructions_file = "$DEVOPS_AGENT_CONTAINER_PATH"
-model = "gpt-5.4-mini"
-EOF
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2])
+instructions = source.read_text()
+target.write_text(
+    'name = "devops"\n'
+    'description = "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."\n'
+    'model = "gpt-5.4-mini"\n'
+    f'developer_instructions = {json.dumps(instructions)}\n'
+)
+PY
+
+if [[ "$#" -eq 0 ]]; then
+  CONTAINER_CMD=(
+    codex
+    "${CODEX_CONFIG_OVERRIDES[@]}"
+    --dangerously-bypass-approvals-and-sandbox
+    -C "$HOST_WORKSPACE"
+  )
+elif [[ "${1:-}" == "codex" ]]; then
+  CONTAINER_CMD=(codex "${CODEX_CONFIG_OVERRIDES[@]}" "${@:2}")
+else
+  CONTAINER_CMD=("$@")
+fi
 
 ensure_chrome_devtools
 
