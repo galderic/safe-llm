@@ -3,188 +3,30 @@ set -euo pipefail
 
 readonly IMAGE="claude-sandbox"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+source "$REPO_ROOT/lib/sandbox.sh"
+
 HOST_WORKSPACE="$(pwd)"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9222}"
 CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}"
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
-GITHUB_AUTH_ARGS=(
-    -e GH_TOKEN
-    -e GITHUB_TOKEN
-    -e GIT_CONFIG_COUNT=1
-    -e GIT_CONFIG_KEY_0=credential.https://github.com.helper
-    -e 'GIT_CONFIG_VALUE_0=!f() { test "$1" = get || exit 0; token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"; test -n "$token" || exit 0; printf "username=x-access-token\npassword=%s\n" "$token"; }; f'
-)
+register_cleanup_file "$CLAUDE_CONFIG_FILE"
+setup_github_auth_args
 
 # Path under $HOME/.claude where we stage Keychain-extracted credentials on
 # macOS (see the credentials block further below). Removed on exit so the
 # host's normal Keychain-based auth state is left untouched.
 STAGED_CREDENTIALS_PATH=""
 
-# Tempfile holding a synthesized /etc/passwd for the macOS host uid; see
-# the passwd-synthesis block further below.
-HOST_PASSWD_FILE=""
-
 cleanup() {
-    if [[ -n "${DEVTOOLS_PROXY_PID:-}" ]]; then
-        kill "$DEVTOOLS_PROXY_PID" >/dev/null 2>&1 || true
-    fi
-    rm -f -- "$CLAUDE_CONFIG_FILE"
-    if [[ -n "$STAGED_CREDENTIALS_PATH" && -f "$STAGED_CREDENTIALS_PATH" ]]; then
-        rm -f -- "$STAGED_CREDENTIALS_PATH"
-    fi
-    if [[ -n "$HOST_PASSWD_FILE" && -f "$HOST_PASSWD_FILE" ]]; then
-        rm -f -- "$HOST_PASSWD_FILE"
-    fi
+    sandbox_cleanup
 }
 trap cleanup EXIT
 
-# Portable mtime / ISO-8601-to-epoch helpers (GNU coreutils on Linux,
-# BSD tools on macOS).
-file_mtime() {
-    if stat -c %Y "$1" >/dev/null 2>&1; then
-        stat -c %Y "$1"
-    else
-        stat -f %m "$1"
-    fi
-}
-
-iso_to_epoch() {
-    if date -d "$1" +%s >/dev/null 2>&1; then
-        date -d "$1" +%s
-    else
-        # BSD date: strip fractional seconds and trailing 'Z', parse as UTC.
-        local ts="${1%%.*}"
-        ts="${ts%Z}"
-        TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$ts" +%s
-    fi
-}
-
-IMAGE_CREATED_AT="$(docker image inspect --format '{{.Created}}' "$IMAGE" 2>/dev/null || true)"
-if [[ -z "$IMAGE_CREATED_AT" ]]; then
-    IMAGE_NEEDS_BUILD=1
-else
-    IMAGE_CREATED_EPOCH="$(iso_to_epoch "$IMAGE_CREATED_AT")"
-    DOCKERFILE_EPOCH="$(file_mtime "$SCRIPT_DIR/Dockerfile")"
-    if [[ "$DOCKERFILE_EPOCH" -gt "$IMAGE_CREATED_EPOCH" ]]; then
-        IMAGE_NEEDS_BUILD=1
-    else
-        IMAGE_NEEDS_BUILD=0
-    fi
-fi
-
-if [[ "$IMAGE_NEEDS_BUILD" == 1 ]]; then
-    docker build -t "$IMAGE" "$SCRIPT_DIR"
-fi
-
-HOST_OS="$(uname -s)"
-
-# Pick how the container reaches the host's Chrome DevTools endpoint.
-#
-# Linux: the kernel bridge IP exposed via `--add-host=host.docker.internal:
-# host-gateway` is a real interface on the host, so we can run a socat
-# proxy bound to that IP that forwards to Chrome on 127.0.0.1. The
-# container then connects to that IP:port.
-#
-# macOS (Docker Desktop): the gateway IP lives inside Docker's VM and is
-# not bindable on the host. Docker Desktop instead provides built-in
-# `host.docker.internal` resolution that NATs into the host's loopback,
-# so we skip the proxy and let the container connect directly to
-# host.docker.internal:<chrome port>.
-if [[ "$HOST_OS" == "Linux" ]]; then
-    HOST_GATEWAY_IP="$(
-        docker run --rm \
-            --add-host=host.docker.internal:host-gateway \
-            "$IMAGE" \
-            getent ahostsv4 host.docker.internal | awk '{print $1; exit}'
-    )"
-    DEVTOOLS_HOST_FOR_CONTAINER="$HOST_GATEWAY_IP"
-    DEVTOOLS_PORT_FOR_CONTAINER="$DEVTOOLS_PROXY_PORT"
-    HOST_PROBE_URL="http://${HOST_GATEWAY_IP}:${DEVTOOLS_PROXY_PORT}/json/version"
-
-    socat \
-        "TCP-LISTEN:${DEVTOOLS_PROXY_PORT},fork,reuseaddr,bind=${HOST_GATEWAY_IP}" \
-        "TCP:127.0.0.1:${CHROME_DEVTOOLS_PORT}" &
-    DEVTOOLS_PROXY_PID="$!"
-else
-    DEVTOOLS_HOST_FOR_CONTAINER="host.docker.internal"
-    DEVTOOLS_PORT_FOR_CONTAINER="$CHROME_DEVTOOLS_PORT"
-    HOST_PROBE_URL="http://127.0.0.1:${CHROME_DEVTOOLS_PORT}/json/version"
-fi
-
-probe_devtools() {
-    local i
-    for i in {1..20}; do
-        if curl -fsS "$HOST_PROBE_URL" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    return 1
-}
-
-# Launch Chrome with remote debugging on $CHROME_DEVTOOLS_PORT. A dedicated
-# --user-data-dir is required because Chrome forwards command-line flags to
-# any already-running instance and silently ignores --remote-debugging-port
-# when it does — a separate profile dir forces a fresh process that actually
-# opens the debug port.
-start_chrome() {
-    local profile_dir="${CHROME_DEBUG_PROFILE_DIR:-${TMPDIR:-/tmp}/chrome-devtools-profile-${CHROME_DEVTOOLS_PORT}}"
-    mkdir -p "$profile_dir"
-    if [[ "$HOST_OS" == "Darwin" ]]; then
-        local chrome_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        if [[ ! -x "$chrome_bin" ]]; then
-            echo "Could not find Google Chrome at: $chrome_bin" >&2
-            return 1
-        fi
-        "$chrome_bin" \
-            --remote-debugging-port="$CHROME_DEVTOOLS_PORT" \
-            --user-data-dir="$profile_dir" \
-            >/dev/null 2>&1 &
-        disown || true
-    else
-        local chrome_bin
-        for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
-            if command -v "$candidate" >/dev/null 2>&1; then
-                chrome_bin="$candidate"
-                break
-            fi
-        done
-        if [[ -z "${chrome_bin:-}" ]]; then
-            echo "Could not find a Chrome/Chromium binary on PATH." >&2
-            return 1
-        fi
-        "$chrome_bin" \
-            --remote-debugging-port="$CHROME_DEVTOOLS_PORT" \
-            --user-data-dir="$profile_dir" \
-            >/dev/null 2>&1 &
-        disown || true
-    fi
-}
-
-if ! probe_devtools; then
-    echo "Chrome DevTools not reachable at ${HOST_PROBE_URL}; starting Chrome..." >&2
-    if ! start_chrome; then
-        exit 1
-    fi
-    DEVTOOLS_READY=0
-    for _ in {1..100}; do
-        if curl -fsS "$HOST_PROBE_URL" >/dev/null 2>&1; then
-            DEVTOOLS_READY=1
-            break
-        fi
-        sleep 0.2
-    done
-    if [[ "$DEVTOOLS_READY" != 1 ]]; then
-        echo "Chrome DevTools still not reachable at ${HOST_PROBE_URL} after launching Chrome." >&2
-        if [[ "$HOST_OS" == "Linux" ]]; then
-            echo "If Chrome is listening on all interfaces, set DEVTOOLS_PROXY_PORT to a free port and update the MCP browser URL to match." >&2
-        fi
-        exit 1
-    fi
-fi
-
-DEVTOOLS_BROWSER_URL="http://${DEVTOOLS_HOST_FOR_CONTAINER}:${DEVTOOLS_PORT_FOR_CONTAINER}"
+ensure_image_current "$IMAGE" "$SCRIPT_DIR"
+setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
+ensure_chrome_devtools
 
 # Ensure the user-level Claude agents dir exists on the host so we can
 # overlay the devops subagent definition into the container via a nested
@@ -241,6 +83,7 @@ DOCKER_MOUNT_ARGS=(
 # exit, so the host's Keychain-based auth state is left untouched.
 if [[ "$HOST_OS" == "Darwin" && ! -f "$HOME/.claude/.credentials.json" ]]; then
     STAGED_CREDENTIALS_PATH="$HOME/.claude/.credentials.json"
+    register_cleanup_file "$STAGED_CREDENTIALS_PATH"
     (umask 077 && : > "$STAGED_CREDENTIALS_PATH")
     if ! security find-generic-password -s "Claude Code-credentials" -w \
             > "$STAGED_CREDENTIALS_PATH" 2>/dev/null; then
@@ -250,61 +93,13 @@ if [[ "$HOST_OS" == "Darwin" && ! -f "$HOME/.claude/.credentials.json" ]]; then
     fi
 fi
 
-# Forward the host's ssh-agent into the container.
-#
-# Linux: bind-mount the agent socket pointed to by $SSH_AUTH_SOCK directly.
-#
-# macOS (Docker Desktop): the host's launchd agent socket lives outside the
-# VM and isn't reachable from a bind mount. Docker Desktop instead exposes
-# the host agent at the magic path /run/host-services/ssh-auth.sock — that
-# path doesn't exist on the host filesystem; Docker Desktop intercepts the
-# -v source and synthesizes the socket inside the container. Requires keys
-# loaded on the host (`ssh-add -l`).
-if [[ "$HOST_OS" == "Darwin" ]]; then
-    DOCKER_MOUNT_ARGS+=(-v /run/host-services/ssh-auth.sock:/ssh-agent)
-    # Docker Desktop synthesizes the socket as root:root 0660, so the
-    # --user-mapped container uid needs the root group to open it.
-    SSH_ENV_ARGS=(-e SSH_AUTH_SOCK=/ssh-agent --group-add 0)
-elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    DOCKER_MOUNT_ARGS+=(-v "$SSH_AUTH_SOCK":/ssh-agent)
-    SSH_ENV_ARGS=(-e SSH_AUTH_SOCK=/ssh-agent)
-else
-    SSH_ENV_ARGS=()
-fi
+setup_ssh_args /home/claude
 
 if [[ -f "$HOME/.gitconfig" ]]; then
     DOCKER_MOUNT_ARGS+=(-v "$HOME/.gitconfig":/home/claude/.gitconfig:ro)
 fi
 
-# Forward the host's ssh known_hosts so `git push` / `ssh` inside the
-# container can verify remote host keys without prompting. The container
-# image's /home/claude is owned by the image's `claude` user (uid 1000),
-# so the host-uid-mapped process can't create ~/.ssh itself; bind-mounting
-# the file directly lets Docker create the parent ~/.ssh as part of the
-# mount setup.
-if [[ -f "$HOME/.ssh/known_hosts" ]]; then
-    DOCKER_MOUNT_ARGS+=(-v "$HOME/.ssh/known_hosts":/home/claude/.ssh/known_hosts:ro)
-fi
-
-# Synthesize an /etc/passwd entry for the host uid.
-#
-# Linux: the host uid typically matches a real entry on the host already,
-# and ssh/git inside the container are happy. Nothing to do.
-#
-# macOS (Docker Desktop): the macOS host uid (usually 501) has no entry in
-# the container's /etc/passwd, which only ships `claude:1000`. ssh refuses
-# to run with "No user exists for uid 501" before it can even read
-# $SSH_AUTH_SOCK, so `git push` over ssh fails. Bind-mount a synthesized
-# passwd file that has the image's stock entries plus an extra one mapping
-# the host uid to /home/claude (the home the rest of the script already
-# treats as ours via -e HOME and the .claude bind mounts).
-if [[ "$HOST_OS" == "Darwin" ]]; then
-    HOST_PASSWD_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-passwd.XXXXXX")"
-    docker run --rm "$IMAGE" cat /etc/passwd > "$HOST_PASSWD_FILE"
-    printf 'hostuser:x:%s:%s:host user:/home/claude:/bin/bash\n' \
-        "$(id -u)" "$(id -g)" >> "$HOST_PASSWD_FILE"
-    DOCKER_MOUNT_ARGS+=(-v "$HOST_PASSWD_FILE":/etc/passwd:ro)
-fi
+setup_host_passwd_args "$IMAGE" /home/claude claude
 
 docker run -it --rm \
     --add-host=host.docker.internal:host-gateway \
@@ -312,7 +107,8 @@ docker run -it --rm \
     -w "$HOST_WORKSPACE" \
     -e HOME=/home/claude \
     "${DOCKER_MOUNT_ARGS[@]}" \
-    ${SSH_ENV_ARGS[@]+"${SSH_ENV_ARGS[@]}"} \
+    ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
+    ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
     "${GITHUB_AUTH_ARGS[@]}" \

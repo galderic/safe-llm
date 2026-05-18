@@ -15,6 +15,7 @@ RUN apt-get update \
     jq \
     openssh-client \
     ripgrep \
+    shellcheck \
     socat \
   && rm -rf /var/lib/apt/lists/*
 

@@ -32,7 +32,11 @@ sandbox that:
   (`codex-sandbox` image, Node 22 + ripgrep + `socat`). Installs
   `@openai/codex` globally, rewrites `~/.codex/config.toml` to point the
   `chrome-devtools` MCP at the host-gateway proxy, and appends an
-  `[[agents]]` block for the devops subagent.
+  `[agents.devops]` block for the devops subagent.
+- `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
+  GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
+  passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
+  shell utilities.
 - `<tool>/agents/devops.md` — system prompt for the devops subagent,
   mounted read-only into the container.
 

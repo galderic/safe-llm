@@ -3,7 +3,7 @@ FROM node:22-slim
 LABEL org.opencontainers.image.ref.name="claude-sandbox"
 
 RUN apt-get update && apt-get install -y \
-    git curl bash python3 pip strace socat \
+    git curl bash python3 pip strace socat shellcheck \
     inetutils-telnet iputils-ping \
     python3 python3-pip python3-venv \
     openjdk-17-jdk \
