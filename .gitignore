@@ -2,6 +2,8 @@
 .codex/
 .claude/
 
+.idea/
+
 node_modules/
 
 .env
