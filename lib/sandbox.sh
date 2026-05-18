@@ -140,7 +140,9 @@ setup_host_passwd_args() {
 #
 # macOS (Docker Desktop): the gateway IP lives inside Docker's VM and is not
 # bindable on the host. Docker Desktop's host.docker.internal NATs into the
-# host loopback, so no proxy is needed.
+# host loopback, so no proxy is needed. Chrome rejects DevTools requests whose
+# Host header is a non-localhost hostname, so the MCP browser URL uses Docker's
+# resolved IPv4 address instead of host.docker.internal.
 setup_devtools() {
   local image="$1"
   local chrome_port="$2"
@@ -164,6 +166,15 @@ setup_devtools() {
       "TCP-LISTEN:${DEVTOOLS_PROXY_PORT},fork,reuseaddr,bind=${HOST_GATEWAY_IP}" \
       "TCP:127.0.0.1:${CHROME_DEVTOOLS_PORT}" &
     DEVTOOLS_PROXY_PID="$!"
+  elif [[ "$HOST_OS" == "Darwin" ]]; then
+    DOCKER_DESKTOP_HOST_IP="$(
+      docker run --rm \
+        "$image" \
+        getent ahostsv4 host.docker.internal | awk '{print $1; exit}'
+    )"
+    DEVTOOLS_HOST_FOR_CONTAINER="${DOCKER_DESKTOP_HOST_IP:-host.docker.internal}"
+    DEVTOOLS_PORT_FOR_CONTAINER="$CHROME_DEVTOOLS_PORT"
+    HOST_PROBE_URL="http://127.0.0.1:${CHROME_DEVTOOLS_PORT}/json/version"
   else
     DEVTOOLS_HOST_FOR_CONTAINER="host.docker.internal"
     DEVTOOLS_PORT_FOR_CONTAINER="$CHROME_DEVTOOLS_PORT"

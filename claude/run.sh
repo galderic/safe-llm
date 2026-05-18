@@ -42,11 +42,8 @@ jq --arg browser_url "$DEVTOOLS_BROWSER_URL" '
     def normalize_devtools($url):
         .command = "chrome-devtools-mcp"
         | .args = (.args | rewrite_args($url));
-    if (.mcpServers? and .mcpServers["chrome-devtools"]?) then
-        .mcpServers["chrome-devtools"] |= normalize_devtools($browser_url)
-    else
-        .
-    end
+    .mcpServers = ((.mcpServers // {}))
+    | .mcpServers["chrome-devtools"] = ((.mcpServers["chrome-devtools"] // {}) | normalize_devtools($browser_url))
     | if (.projects? and (.projects | type == "object")) then
         .projects |= with_entries(
             if (.value.mcpServers? and .value.mcpServers["chrome-devtools"]?) then
