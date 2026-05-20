@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
 
+if [[ "${1:-}" == "--rebuild" ]]; then
+  SAFE_LLM_REBUILD=1
+  shift
+fi
+
 HOST_WORKSPACE="$(pwd)"
 PROJECT_NAME="$(basename "$HOST_WORKSPACE" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
 IMAGE="codex-sandbox"
@@ -31,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 
 setup_ssh_args "$CONTAINER_HOME"
+setup_terminal_args
 ensure_image_current "$IMAGE" "$SCRIPT_DIR"
 setup_host_passwd_args "$IMAGE" "$CONTAINER_HOME" codex
 
@@ -88,6 +94,7 @@ docker run --rm -it \
   -v "$CODEX_DIR:$CODEX_CONTAINER_DIR" \
   ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
   ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
+  "${TERMINAL_ARGS[@]}" \
   -e HOME="$CONTAINER_HOME" \
   -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
   -e NPM_CONFIG_CACHE=/tmp/npm-cache \

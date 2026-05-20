@@ -53,6 +53,17 @@ Both scripts rebuild their image automatically when the `Dockerfile` is
 newer than the cached image, then start the agent with the current
 directory mounted as the workspace.
 
+To force a fresh image rebuild before launch, pass `--rebuild` as the first
+launcher argument or set `SAFE_LLM_REBUILD=1`:
+
+```sh
+/path/to/safe-llm/claude/run.sh --rebuild
+/path/to/safe-llm/codex/run.sh --rebuild
+
+SAFE_LLM_REBUILD=1 /path/to/safe-llm/claude/run.sh
+SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex/run.sh
+```
+
 ### Requirements
 
 - Docker.
@@ -140,3 +151,18 @@ Tool config and login state are mounted narrowly:
 - Codex stages `codex/agents/devops.md` into `$CODEX_HOME/agents/devops.md`
   because Docker Desktop cannot reliably nest-mount a file inside an already
   bind-mounted `$CODEX_HOME`; the staged file is removed on exit.
+
+## Terminal rendering
+
+Both launchers pass explicit terminal metadata into the container so rich TUI
+output renders consistently:
+
+- `TERM` defaults to the host value, except empty, `dumb`, and `xterm-ghostty`
+  are normalized to `xterm-256color` because that terminfo entry is available in
+  the Debian-based images.
+- `COLORTERM` defaults to `truecolor`.
+- `LANG` and `LC_ALL` default to `C.UTF-8` so Unicode table and box-drawing
+  characters are not downgraded to ASCII.
+
+Set `SAFE_LLM_TERM`, `SAFE_LLM_LANG`, or `SAFE_LLM_LC_ALL` before launching if a
+project needs different container-side values.

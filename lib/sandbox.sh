@@ -51,21 +51,29 @@ ensure_image_current() {
   local dockerfile_epoch
   local image_needs_build
 
-  image_created_at="$(docker image inspect --format '{{.Created}}' "$image" 2>/dev/null || true)"
-  if [[ -z "$image_created_at" ]]; then
+  if [[ "${SAFE_LLM_REBUILD:-}" == 1 ]]; then
     image_needs_build=1
   else
-    image_created_epoch="$(iso_to_epoch "$image_created_at")"
-    dockerfile_epoch="$(file_mtime "$dockerfile_dir/Dockerfile")"
-    if [[ "$dockerfile_epoch" -gt "$image_created_epoch" ]]; then
+    image_created_at="$(docker image inspect --format '{{.Created}}' "$image" 2>/dev/null || true)"
+    if [[ -z "$image_created_at" ]]; then
       image_needs_build=1
     else
-      image_needs_build=0
+      image_created_epoch="$(iso_to_epoch "$image_created_at")"
+      dockerfile_epoch="$(file_mtime "$dockerfile_dir/Dockerfile")"
+      if [[ "$dockerfile_epoch" -gt "$image_created_epoch" ]]; then
+        image_needs_build=1
+      else
+        image_needs_build=0
+      fi
     fi
   fi
 
   if [[ "$image_needs_build" == 1 ]]; then
-    docker build -t "$image" "$dockerfile_dir"
+    if [[ "${SAFE_LLM_REBUILD:-}" == 1 ]]; then
+      docker build --pull --no-cache -t "$image" "$dockerfile_dir"
+    else
+      docker build -t "$image" "$dockerfile_dir"
+    fi
   fi
 }
 
@@ -78,6 +86,28 @@ setup_github_auth_args() {
     -e GIT_CONFIG_KEY_0=credential.https://github.com.helper
     -e 'GIT_CONFIG_VALUE_0=!f() { test "$1" = get || exit 0; token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"; test -n "$token" || exit 0; printf "username=x-access-token\npassword=%s\n" "$token"; }; f'
   )
+}
+
+setup_terminal_args() {
+  local term="${SAFE_LLM_TERM:-${TERM:-xterm-256color}}"
+  if [[ -z "$term" || "$term" == "dumb" || "$term" == "xterm-ghostty" ]]; then
+    term="xterm-256color"
+  fi
+
+  local locale="${SAFE_LLM_LANG:-C.UTF-8}"
+  local lc_all="${SAFE_LLM_LC_ALL:-$locale}"
+
+  # shellcheck disable=SC2034
+  TERMINAL_ARGS=(
+    -e "TERM=$term"
+    -e "COLORTERM=${COLORTERM:-truecolor}"
+    -e "LANG=$locale"
+    -e "LC_ALL=$lc_all"
+  )
+
+  if [[ -n "${TERM_PROGRAM:-}" ]]; then
+    TERMINAL_ARGS+=(-e "TERM_PROGRAM=$TERM_PROGRAM")
+  fi
 }
 
 # Portable in-place sed. BSD sed (macOS) requires an explicit suffix argument

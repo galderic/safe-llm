@@ -6,6 +6,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
 
+if [[ "${1:-}" == "--rebuild" ]]; then
+    SAFE_LLM_REBUILD=1
+    shift
+fi
+
 HOST_WORKSPACE="$(pwd)"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9222}"
@@ -91,6 +96,7 @@ if [[ "$HOST_OS" == "Darwin" && ! -f "$HOME/.claude/.credentials.json" ]]; then
 fi
 
 setup_ssh_args /home/claude
+setup_terminal_args
 
 if [[ -f "$HOME/.gitconfig" ]]; then
     DOCKER_MOUNT_ARGS+=(-v "$HOME/.gitconfig":/home/claude/.gitconfig:ro)
@@ -106,6 +112,7 @@ docker run -it --rm \
     "${DOCKER_MOUNT_ARGS[@]}" \
     ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
     ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
+    "${TERMINAL_ARGS[@]}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
     "${GITHUB_AUTH_ARGS[@]}" \
