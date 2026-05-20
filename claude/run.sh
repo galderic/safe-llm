@@ -5,6 +5,7 @@ readonly IMAGE="claude-sandbox"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
+DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
     SAFE_LLM_REBUILD=1
@@ -67,7 +68,7 @@ DOCKER_MOUNT_ARGS=(
     -v "$HOST_WORKSPACE:$HOST_WORKSPACE"
     -v "$HOME/.claude":/home/claude/.claude
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
-    -v "$SCRIPT_DIR/agents/devops.md":/home/claude/.claude/agents/devops.md:ro
+    -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
 )
 
 # Provide subscription-based OAuth credentials to the Linux container.

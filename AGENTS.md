@@ -20,7 +20,7 @@ sandbox that:
   `socat` proxy so the `chrome-devtools` MCP server can drive the host
   browser from inside the sandbox.
 - Registers a scoped `devops` subagent (CI/CD, infra, Docker/K8s,
-  observability, release engineering) defined in `<tool>/agents/devops.md`.
+  observability, release engineering) defined in `agents/devops.md`.
 
 ## Layout
 
@@ -37,8 +37,8 @@ sandbox that:
   GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
   passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
   shell utilities.
-- `<tool>/agents/devops.md` — system prompt for the devops subagent,
-  mounted read-only into the container.
+- `agents/devops.md` — system prompt for the devops subagent, mounted or
+  staged into the container by the launchers.
 
 ## Usage
 
@@ -135,8 +135,7 @@ Tool config and login state are mounted narrowly:
 
 - Claude mounts host `~/.claude` at `/home/claude/.claude`, mounts a temporary
   rewritten `.claude.json` at `/home/claude/.claude.json`, and overlays
-  `claude/agents/devops.md` into `/home/claude/.claude/agents/devops.md`
-  read-only.
+  `agents/devops.md` into `/home/claude/.claude/agents/devops.md` read-only.
 - On macOS, Claude subscription credentials normally live in the login
   Keychain, which the container cannot read. If `~/.claude/.credentials.json`
   is absent, `claude/run.sh` extracts the `Claude Code-credentials` Keychain
@@ -148,7 +147,7 @@ Tool config and login state are mounted narrowly:
 - Codex temporarily edits `config.toml` to rewrite the `chrome-devtools` MCP
   URL and append the `devops` agent block, then restores the original file from
   a backup on exit.
-- Codex stages `codex/agents/devops.md` into `$CODEX_HOME/agents/devops.md`
+- Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml`
   because Docker Desktop cannot reliably nest-mount a file inside an already
   bind-mounted `$CODEX_HOME`; the staged file is removed on exit.
 

@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
+DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
   SAFE_LLM_REBUILD=1
@@ -56,7 +57,7 @@ CODEX_CONFIG_OVERRIDES=(
 # removes it from the host after the session.
 mkdir -p "$CODEX_DIR/agents"
 STAGED_DEVOPS_AGENT_PATH="$CODEX_DIR/agents/devops.toml"
-python3 - "$SCRIPT_DIR/agents/devops.md" "$STAGED_DEVOPS_AGENT_PATH" <<'PY'
+python3 - "$DEVOPS_AGENT_FILE" "$STAGED_DEVOPS_AGENT_PATH" <<'PY'
 import json
 import pathlib
 import sys
@@ -64,6 +65,10 @@ import sys
 source = pathlib.Path(sys.argv[1])
 target = pathlib.Path(sys.argv[2])
 instructions = source.read_text()
+if instructions.startswith("---\n"):
+    _, separator, body = instructions.partition("\n---\n")
+    if separator:
+        instructions = body.lstrip()
 target.write_text(
     'name = "devops"\n'
     'description = "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."\n'
