@@ -3,13 +3,13 @@ FROM node:22-slim
 LABEL org.opencontainers.image.ref.name="claude-sandbox"
 
 RUN apt-get update && apt-get install -y \
-    git curl bash python3 pip strace socat shellcheck \
-    python3 python3-pip python3-venv \
+    git curl bash python3 python3-pip python3-venv strace socat shellcheck \
     gh hcloud-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Install official Chrome DevTools MCP (as root, before switching user)
 RUN npm install -g chrome-devtools-mcp@latest
+RUN python3 -m pip install --break-system-packages --no-cache-dir uv
 
 RUN usermod -l claude -d /home/claude -m node
 USER claude

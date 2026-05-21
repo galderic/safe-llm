@@ -26,13 +26,14 @@ sandbox that:
 
 - `claude/` — `Dockerfile` + `run.sh` for the Claude Code sandbox
   (`claude-sandbox` image, Node 22 + Python + JDK 17 + Maven + `gh`).
-  Installs Claude via the official `claude.ai/install.sh` script and
-  overlays the devops subagent into `~/.claude/agents/`.
+  Installs Claude via the official `claude.ai/install.sh` script, configures
+  the Chrome DevTools and Plane MCP servers, and overlays the devops subagent
+  into `~/.claude/agents/`.
 - `codex/` — `Dockerfile` + `run.sh` for the Codex sandbox
-  (`codex-sandbox` image, Node 22 + ripgrep + `socat`). Installs
+  (`codex-sandbox` image, Node 22 + Python + ripgrep + `socat`). Installs
   `@openai/codex` globally, rewrites `~/.codex/config.toml` to point the
-  `chrome-devtools` MCP at the host-gateway proxy, and appends an
-  `[agents.devops]` block for the devops subagent.
+  `chrome-devtools` MCP at the host-gateway proxy, configures the Plane MCP
+  server, and appends an `[agents.devops]` block for the devops subagent.
 - `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
   GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
   passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
@@ -70,8 +71,19 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex/run.sh
 - Chrome running with `--remote-debugging-port=9222` (or override via
   `CHROME_DEVTOOLS_PORT` / `DEVTOOLS_PROXY_PORT`) if you want the
   `chrome-devtools` MCP to work.
+- Plane MCP credentials in the environment if you want the `plane` MCP to
+  be registered: `PLANE_API_KEY` and `PLANE_WORKSPACE_SLUG`. `PLANE_BASE_URL`
+  is optional and defaults to Plane Cloud when unset.
 - A host-side login for the agent you're launching (`~/.claude` or
   `~/.codex`).
+
+### Local agent environment
+
+Docker is not installed in this agent workspace, and it should not be
+installed here. Agents should not try to build images or run Docker-based
+launcher validation locally; use static checks where possible and surface that
+Docker validation needs to be run in an environment where Docker is already
+available.
 
 ## Host/container identity and secret mapping
 
@@ -130,6 +142,26 @@ GitHub HTTPS auth is forwarded without writing credentials into images:
   credential lookups and reads the token from the environment.
 - Claude also mounts the host `~/.gitconfig` read-only when present. Codex
   currently does not.
+
+Plane MCP auth is forwarded only through explicit environment variables:
+
+- Both launchers register the official Python-based `plane-mcp-server` through
+  `uvx plane-mcp-server stdio`.
+- The Plane MCP server is registered only when `PLANE_API_KEY` and
+  `PLANE_WORKSPACE_SLUG` are present on the host, because the stdio server exits
+  during initialization when either is missing.
+- The launchers run Plane through `scripts/plane-mcp-stdio-wrapper.py`, which
+  defaults to the `work_items` tool group to keep the stdio `tools/list` response small
+  enough for Codex startup. Override with `PLANE_MCP_TOOL_GROUPS` when a broader
+  Plane surface is needed.
+- `PLANE_BASE_URL`, `PLANE_API_KEY`, and `PLANE_WORKSPACE_SLUG` are passed into
+  the container. Codex also lists these names in `mcp_servers.plane.env_vars`
+  so the MCP subprocess inherits them without writing secret values into CLI
+  arguments or config files. `UV_CACHE_DIR` and `UV_TOOL_DIR` are redirected to
+  `/tmp` so `uvx` does not need to write into the image home when the container
+  runs as the host uid.
+- The launchers do not discover Plane credentials or write Plane tokens into
+  images or persistent config files.
 
 Tool config and login state are mounted narrowly:
 

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
+PLANE_MCP_WRAPPER_FILE="$REPO_ROOT/scripts/plane-mcp-stdio-wrapper.py"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
     SAFE_LLM_REBUILD=1
@@ -15,6 +16,9 @@ fi
 HOST_WORKSPACE="$(pwd)"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9222}"
+UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
+UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
+PLANE_MCP_WRAPPER_CONTAINER="${PLANE_MCP_WRAPPER_CONTAINER:-/tmp/plane-mcp-stdio-wrapper.py}"
 CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}"
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
@@ -40,7 +44,19 @@ ensure_chrome_devtools
 mkdir -p "$HOME/.claude/agents"
 
 cp "$HOME/.claude.json" "$CLAUDE_CONFIG_FILE"
-jq --arg browser_url "$DEVTOOLS_BROWSER_URL" '
+if [[ -n "${PLANE_API_KEY:-}" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
+    PLANE_MCP_ENABLED=true
+else
+    PLANE_MCP_ENABLED=false
+fi
+jq \
+    --arg browser_url "$DEVTOOLS_BROWSER_URL" \
+    --argjson plane_enabled "$PLANE_MCP_ENABLED" \
+    --arg plane_wrapper "$PLANE_MCP_WRAPPER_CONTAINER" \
+    --arg uv_cache_dir "$UV_CACHE_DIR_CONTAINER" \
+    --arg uv_tool_dir "$UV_TOOL_DIR_CONTAINER" \
+    --arg plane_tool_groups "${PLANE_MCP_TOOL_GROUPS:-work_items}" \
+    '
     def rewrite_args($url):
         [(. // [])[] | select(. != "-y" and . != "chrome-devtools-mcp" and . != "chrome-devtools-mcp@latest")]
         | map(if type == "string" and startswith("--browser-url=") then "--browser-url=\($url)" else . end)
@@ -48,8 +64,21 @@ jq --arg browser_url "$DEVTOOLS_BROWSER_URL" '
     def normalize_devtools($url):
         .command = "chrome-devtools-mcp"
         | .args = (.args | rewrite_args($url));
+    def normalize_plane:
+        .command = "uvx"
+        | .args = ["--from", "plane-mcp-server", "python", $plane_wrapper, "stdio"]
+        | .env = ((.env // {}) + {
+            "UV_CACHE_DIR": $uv_cache_dir,
+            "UV_TOOL_DIR": $uv_tool_dir,
+            "PLANE_MCP_TOOL_GROUPS": $plane_tool_groups
+          });
     .mcpServers = ((.mcpServers // {}))
     | .mcpServers["chrome-devtools"] = ((.mcpServers["chrome-devtools"] // {}) | normalize_devtools($browser_url))
+    | if $plane_enabled then
+        .mcpServers["plane"] = ((.mcpServers["plane"] // {}) | normalize_plane)
+      else
+        del(.mcpServers["plane"])
+      end
     | if (.projects? and (.projects | type == "object")) then
         .projects |= with_entries(
             if (.value.mcpServers? and .value.mcpServers["chrome-devtools"]?) then
@@ -69,6 +98,7 @@ DOCKER_MOUNT_ARGS=(
     -v "$HOME/.claude":/home/claude/.claude
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
     -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
+    -v "$PLANE_MCP_WRAPPER_FILE:$PLANE_MCP_WRAPPER_CONTAINER:ro"
 )
 
 # Provide subscription-based OAuth credentials to the Linux container.
@@ -116,6 +146,13 @@ docker run -it --rm \
     "${TERMINAL_ARGS[@]}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
+    -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
+    -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
+    -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
+    -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items}" \
+    -e PLANE_BASE_URL="${PLANE_BASE_URL:-}" \
+    -e PLANE_API_KEY="${PLANE_API_KEY:-}" \
+    -e PLANE_WORKSPACE_SLUG="${PLANE_WORKSPACE_SLUG:-}" \
     "${GITHUB_AUTH_ARGS[@]}" \
     "$IMAGE" \
     bash -lc '# The container is the sandbox boundary; skip Claude Code prompts inside it by default.
