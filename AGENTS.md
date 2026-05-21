@@ -19,6 +19,8 @@ sandbox that:
 - Bridges the host's Chrome DevTools endpoint into the container via a
   `socat` proxy so the `chrome-devtools` MCP server can drive the host
   browser from inside the sandbox.
+- Registers the Plane MCP server when explicit Plane credentials are present,
+  with a constrained default tool surface for predictable agent startup.
 - Registers a scoped `devops` subagent (CI/CD, infra, Docker/K8s,
   observability, release engineering) defined in `agents/devops.md`.
 
@@ -40,6 +42,9 @@ sandbox that:
   shell utilities.
 - `agents/devops.md` — system prompt for the devops subagent, mounted or
   staged into the container by the launchers.
+- `scripts/plane-mcp-stdio-wrapper.py` — wrapper around the official
+  `plane-mcp-server` stdio entrypoint that limits which Plane MCP tool groups
+  are registered.
 
 ## Usage
 
@@ -71,9 +76,10 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex/run.sh
 - Chrome running with `--remote-debugging-port=9222` (or override via
   `CHROME_DEVTOOLS_PORT` / `DEVTOOLS_PROXY_PORT`) if you want the
   `chrome-devtools` MCP to work.
-- Plane MCP credentials in the environment if you want the `plane` MCP to
-  be registered: `PLANE_API_KEY` and `PLANE_WORKSPACE_SLUG`. `PLANE_BASE_URL`
-  is optional and defaults to Plane Cloud when unset.
+- Plane MCP credentials in the environment if you want the `plane` MCP to be
+  registered: `PLANE_API_KEY` and `PLANE_WORKSPACE_SLUG`. `PLANE_BASE_URL` is
+  optional and defaults to Plane Cloud when unset. `PLANE_MCP_TOOL_GROUPS`
+  optionally expands the default Plane MCP tool surface.
 - A host-side login for the agent you're launching (`~/.claude` or
   `~/.codex`).
 
@@ -143,17 +149,33 @@ GitHub HTTPS auth is forwarded without writing credentials into images:
 - Claude also mounts the host `~/.gitconfig` read-only when present. Codex
   currently does not.
 
-Plane MCP auth is forwarded only through explicit environment variables:
+Plane MCP is integrated through the official server and a local stdio wrapper:
 
 - Both launchers register the official Python-based `plane-mcp-server` through
-  `uvx plane-mcp-server stdio`.
+  `uvx --from plane-mcp-server python /tmp/plane-mcp-stdio-wrapper.py stdio`.
+  The wrapper imports the upstream `plane_mcp` package, replaces its tool
+  registration hook, then calls the official stdio entrypoint. It does not
+  implement Plane API behavior itself.
 - The Plane MCP server is registered only when `PLANE_API_KEY` and
   `PLANE_WORKSPACE_SLUG` are present on the host, because the stdio server exits
   during initialization when either is missing.
 - The launchers run Plane through `scripts/plane-mcp-stdio-wrapper.py`, which
-  defaults to the `work_items` tool group to keep the stdio `tools/list` response small
-  enough for Codex startup. Override with `PLANE_MCP_TOOL_GROUPS` when a broader
-  Plane surface is needed.
+  defaults to `PLANE_MCP_TOOL_GROUPS=work_items` to keep the stdio `tools/list`
+  response small enough for Codex startup. With that default, agents see only
+  the seven work-item tools: create, delete, list, retrieve, retrieve by
+  project identifier and sequence number, search, and update.
+- Override `PLANE_MCP_TOOL_GROUPS` with a comma-separated list when a broader
+  Plane surface is needed, for example
+  `PLANE_MCP_TOOL_GROUPS=work_items,projects,states,labels`. Supported groups
+  are `cycles`, `epics`, `initiatives`, `intake`, `labels`, `milestones`,
+  `modules`, `pages`, `projects`, `states`, `users`,
+  `work_item_activities`, `work_item_comments`, `work_item_links`,
+  `work_item_properties`, `work_item_relations`, `work_item_types`,
+  `work_items`, `work_logs`, and `workspaces`.
+- Running the upstream command directly as `uvx plane-mcp-server stdio` would
+  expose the full Plane MCP tool surface, but the larger `tools/list` response
+  was the reason the wrapper was added. Keep the wrapper unless Codex startup
+  has been revalidated against the full upstream tool set.
 - `PLANE_BASE_URL`, `PLANE_API_KEY`, and `PLANE_WORKSPACE_SLUG` are passed into
   the container. Codex also lists these names in `mcp_servers.plane.env_vars`
   so the MCP subprocess inherits them without writing secret values into CLI
