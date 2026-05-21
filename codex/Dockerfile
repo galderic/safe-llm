@@ -12,6 +12,7 @@ RUN apt-get update \
     ca-certificates \
     curl \
     git \
+    hcloud-cli \
     jq \
     openssh-client \
     ripgrep \

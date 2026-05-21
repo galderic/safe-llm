@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.ref.name="claude-sandbox"
 RUN apt-get update && apt-get install -y \
     git curl bash python3 pip strace socat shellcheck \
     python3 python3-pip python3-venv \
-    gh \
+    gh hcloud-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Install official Chrome DevTools MCP (as root, before switching user)
