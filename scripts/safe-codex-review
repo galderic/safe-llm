@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${CODEX_LINEAR_API_KEY:-}" ]]; then
+  export LINEAR_API_KEY="$CODEX_LINEAR_API_KEY"
+else
+  unset LINEAR_API_KEY
+fi
+
+if [[ -n "${CODEX_PLANE_API_KEY:-}" ]]; then
+  export PLANE_API_KEY="$CODEX_PLANE_API_KEY"
+elif [[ -z "${PLANE_API_KEY:-}" ]]; then
+  unset PLANE_API_KEY
+fi
+
+export HOME="${CODEX_CONTAINER_HOME:-/home/node}"
+export CODEX_HOME="${CODEX_HOME:-/home/node/.codex}"
+export SAFE_LLM_SUBAGENT=1
+
+prompt='You are running as a secondary reviewer invoked by another agent.
+
+Do not invoke Claude, Codex, other coding agents, subagents, review bots, or automation that would call an agent. Do not ask another agent to review your work. This is a single-pass review.
+
+Review the requested code or PR. Focus on correctness bugs, regressions, security risks, missing tests, and unclear behavior. Return findings with file/line references. If a PR number is provided and GitHub CLI is available, add concise PR review comments only for high-confidence findings.'
+
+if [[ "$#" -gt 0 ]]; then
+  prompt="${prompt}
+
+Request:
+$*"
+fi
+
+exec codex exec --dangerously-bypass-approvals-and-sandbox "$prompt"

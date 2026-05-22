@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
 source "$REPO_ROOT/lib/sandbox.sh"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
 MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
@@ -15,14 +15,18 @@ fi
 
 HOST_WORKSPACE="$(pwd)"
 PROJECT_NAME="$(basename "$HOST_WORKSPACE" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
-IMAGE="codex-sandbox"
+IMAGE="safe-llm-sandbox"
 CONTAINER_HOME="${DEV_CONTAINER_HOME:-/home/node}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
-CODEX_CONTAINER_DIR="$CODEX_DIR"
+CODEX_CONTAINER_DIR="${CODEX_CONTAINER_DIR:-/home/node/.codex}"
 NODE_MODULES_VOLUME="${DEV_CONTAINER_NODE_MODULES_VOLUME:-${PROJECT_NAME}-node-modules}"
 UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
 UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
 PLANE_MCP_WRAPPER_CONTAINER="${PLANE_MCP_WRAPPER_CONTAINER:-/tmp/plane-mcp-stdio-wrapper.py}"
+CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
+CODEX_PLANE_API_KEY_EFFECTIVE="${CODEX_PLANE_API_KEY:-${PLANE_API_KEY:-}}"
+CLAUDE_PLANE_API_KEY_EFFECTIVE="${CLAUDE_PLANE_API_KEY:-${PLANE_API_KEY:-}}"
+register_cleanup_file "$CLAUDE_CONFIG_FILE"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9223}"
 CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS:-When browser automation is needed, prefer the chrome-devtools MCP server directly when its tools are available. Do not route browser work through the Browser plugin or browser skill unless a higher-priority instruction explicitly requires it.}"
@@ -32,6 +36,7 @@ setup_github_auth_args
 # Paths under $HOME/.codex where bundled subagent prompts are staged so the
 # parent bind mount carries them into the container (see below for rationale).
 STAGED_AGENT_PATHS=()
+STAGED_CREDENTIALS_PATH=""
 
 cleanup() {
   local staged_agent_path
@@ -46,7 +51,7 @@ trap cleanup EXIT
 
 setup_ssh_args "$CONTAINER_HOME"
 setup_terminal_args
-ensure_image_current "$IMAGE" "$SCRIPT_DIR"
+ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_host_passwd_args "$IMAGE" "$CONTAINER_HOME" codex
 
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
@@ -60,7 +65,7 @@ CODEX_CONFIG_OVERRIDES=(
   -c 'mcp_servers.chrome-devtools.env={ NPM_CONFIG_CACHE = "/tmp/npm-cache" }'
 )
 
-if [[ -n "${PLANE_API_KEY:-}" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
+if [[ -n "$CODEX_PLANE_API_KEY_EFFECTIVE" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
   CODEX_CONFIG_OVERRIDES+=(
     -c 'mcp_servers.plane.enabled=true'
     -c 'mcp_servers.plane.required=false'
@@ -84,6 +89,73 @@ fi
 # $CODEX_DIR bind mount carries them into the container, and cleanup removes
 # them from the host after the session.
 mkdir -p "$CODEX_DIR/agents"
+mkdir -p "$HOME/.claude/agents"
+
+if [[ -f "$HOME/.claude.json" ]]; then
+  cp "$HOME/.claude.json" "$CLAUDE_CONFIG_FILE"
+else
+  printf '{}\n' > "$CLAUDE_CONFIG_FILE"
+fi
+if [[ -n "$CLAUDE_PLANE_API_KEY_EFFECTIVE" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
+  PLANE_MCP_ENABLED=true
+else
+  PLANE_MCP_ENABLED=false
+fi
+jq \
+  --arg browser_url "$DEVTOOLS_BROWSER_URL" \
+  --argjson plane_enabled "$PLANE_MCP_ENABLED" \
+  --arg plane_wrapper "$PLANE_MCP_WRAPPER_CONTAINER" \
+  --arg uv_cache_dir "$UV_CACHE_DIR_CONTAINER" \
+  --arg uv_tool_dir "$UV_TOOL_DIR_CONTAINER" \
+  --arg plane_tool_groups "${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
+  '
+  def rewrite_args($url):
+      [(. // [])[] | select(. != "-y" and . != "chrome-devtools-mcp" and . != "chrome-devtools-mcp@latest")]
+      | map(if type == "string" and startswith("--browser-url=") then "--browser-url=\($url)" else . end)
+      | if any(.[]; type == "string" and startswith("--browser-url=")) then . else . + ["--browser-url=\($url)"] end;
+  def normalize_devtools($url):
+      .command = "chrome-devtools-mcp"
+      | .args = (.args | rewrite_args($url));
+  def normalize_plane:
+      .command = "uvx"
+      | .args = ["--from", "plane-mcp-server", "python", $plane_wrapper, "stdio"]
+      | .env = ((.env // {}) + {
+          "UV_CACHE_DIR": $uv_cache_dir,
+          "UV_TOOL_DIR": $uv_tool_dir,
+          "PLANE_MCP_TOOL_GROUPS": $plane_tool_groups
+        });
+  .mcpServers = ((.mcpServers // {}))
+  | .mcpServers["chrome-devtools"] = ((.mcpServers["chrome-devtools"] // {}) | normalize_devtools($browser_url))
+  | if $plane_enabled then
+      .mcpServers["plane"] = ((.mcpServers["plane"] // {}) | normalize_plane)
+    else
+      del(.mcpServers["plane"])
+    end
+  | if (.projects? and (.projects | type == "object")) then
+      .projects |= with_entries(
+          if (.value.mcpServers? and .value.mcpServers["chrome-devtools"]?) then
+              .value.mcpServers["chrome-devtools"] |= normalize_devtools($browser_url)
+          else
+              .
+          end
+      )
+    else
+      .
+    end
+' "$CLAUDE_CONFIG_FILE" > "${CLAUDE_CONFIG_FILE}.tmp"
+mv "${CLAUDE_CONFIG_FILE}.tmp" "$CLAUDE_CONFIG_FILE"
+
+if [[ "$HOST_OS" == "Darwin" && ! -f "$HOME/.claude/.credentials.json" ]]; then
+  STAGED_CREDENTIALS_PATH="$HOME/.claude/.credentials.json"
+  register_cleanup_file "$STAGED_CREDENTIALS_PATH"
+  (umask 077 && : > "$STAGED_CREDENTIALS_PATH")
+  if ! security find-generic-password -s "Claude Code-credentials" -w \
+      > "$STAGED_CREDENTIALS_PATH" 2>/dev/null; then
+    echo "Could not stage Claude Code credentials for optional safe-claude-review." >&2
+    echo "Run 'claude login' on the host first if this Codex session needs to call Claude." >&2
+  fi
+fi
+
 stage_codex_agent() {
   local source_file="$1"
   local target_file="$2"
@@ -146,21 +218,44 @@ docker run --rm -it \
   -v "$HOST_WORKSPACE:$HOST_WORKSPACE" \
   -w "$HOST_WORKSPACE" \
   -v "$CODEX_DIR:$CODEX_CONTAINER_DIR" \
+  -v "$HOME/.claude":/home/claude/.claude \
+  -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json \
+  -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro \
+  -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro \
   -v "$PLANE_MCP_WRAPPER_FILE:$PLANE_MCP_WRAPPER_CONTAINER:ro" \
   ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
   ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
   "${TERMINAL_ARGS[@]}" \
   -e HOME="$CONTAINER_HOME" \
   -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
+  -e CODEX_CONTAINER_HOME="$CONTAINER_HOME" \
   -e NPM_CONFIG_CACHE=/tmp/npm-cache \
   -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
   -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
   -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
   -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
+  -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+  -e CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}" \
+  -e CODEX_LINEAR_API_KEY="${CODEX_LINEAR_API_KEY:-}" \
+  -e CLAUDE_LINEAR_API_KEY="${CLAUDE_LINEAR_API_KEY:-}" \
+  -e CODEX_PLANE_API_KEY="${CODEX_PLANE_API_KEY:-}" \
+  -e CLAUDE_PLANE_API_KEY="${CLAUDE_PLANE_API_KEY:-}" \
   -e PLANE_BASE_URL="${PLANE_BASE_URL:-}" \
   -e PLANE_API_KEY="${PLANE_API_KEY:-}" \
   -e PLANE_WORKSPACE_SLUG="${PLANE_WORKSPACE_SLUG:-}" \
   "${GITHUB_AUTH_ARGS[@]}" \
   -v "$NODE_MODULES_VOLUME:$HOST_WORKSPACE/node_modules" \
   --user "$(id -u):$(id -g)" \
-  "$IMAGE" "${CONTAINER_CMD[@]}"
+  "$IMAGE" bash -lc '
+    if [[ -n "${CODEX_LINEAR_API_KEY:-}" ]]; then
+      export LINEAR_API_KEY="$CODEX_LINEAR_API_KEY"
+    else
+      unset LINEAR_API_KEY
+    fi
+    if [[ -n "${CODEX_PLANE_API_KEY:-}" ]]; then
+      export PLANE_API_KEY="$CODEX_PLANE_API_KEY"
+    elif [[ -z "${PLANE_API_KEY:-}" ]]; then
+      unset PLANE_API_KEY
+    fi
+    exec "$@"
+  ' bash "${CONTAINER_CMD[@]}"

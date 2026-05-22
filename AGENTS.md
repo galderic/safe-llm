@@ -27,16 +27,19 @@ sandbox that:
 
 ## Layout
 
-- `claude/` — `Dockerfile` + `run.sh` for the Claude Code sandbox
-  (`claude-sandbox` image, Node 22 + Python + JDK 17 + Maven + `gh`).
-  Installs Claude via the official `claude.ai/install.sh` script, configures
-  the Chrome DevTools and Plane MCP servers, and overlays bundled subagents
-  into `~/.claude/agents/`.
-- `codex/` — `Dockerfile` + `run.sh` for the Codex sandbox
-  (`codex-sandbox` image, Node 22 + Python + ripgrep + `socat`). Installs
-  `@openai/codex` globally, passes runtime config overrides for the
-  Chrome DevTools and Plane MCP servers, and stages bundled custom-agent TOML
-  files for the subagents.
+- `Dockerfile` — shared multi-target sandbox image. The `both` target installs
+  Claude Code, OpenAI Codex, shared CLI dependencies, Chrome DevTools MCP, and
+  the cross-agent review wrappers.
+- `claude.sh` — launcher for the Claude Code sandbox. It starts the shared
+  `safe-llm-sandbox` image with Claude as the primary agent, configures the
+  Chrome DevTools and Plane MCP servers, overlays bundled Claude subagents into
+  `~/.claude/agents/`, and also mounts Codex config so `safe-codex-review` is
+  available inside the sandbox.
+- `codex.sh` — launcher for the Codex sandbox. It starts the shared
+  `safe-llm-sandbox` image with Codex as the primary agent, passes runtime
+  config overrides for the Chrome DevTools and Plane MCP servers, stages
+  bundled custom-agent TOML files for Codex subagents, and also mounts Claude
+  config so `safe-claude-review` is available inside the sandbox.
 - `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
   GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
   passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
@@ -54,23 +57,23 @@ sandbox that:
 From any project directory:
 
 ```sh
-/path/to/safe-llm/claude/run.sh    # launch Claude Code in a sandbox
-/path/to/safe-llm/codex/run.sh     # launch Codex in a sandbox
+/path/to/safe-llm/claude.sh    # launch Claude Code in a sandbox
+/path/to/safe-llm/codex.sh     # launch Codex in a sandbox
 ```
 
-Both scripts rebuild their image automatically when the `Dockerfile` is
-newer than the cached image, then start the agent with the current
-directory mounted as the workspace.
+Both scripts rebuild their image automatically when the root `Dockerfile` or
+cross-agent wrapper scripts are newer than the cached image, then start the
+agent with the current directory mounted as the workspace.
 
 To force a fresh image rebuild before launch, pass `--rebuild` as the first
 launcher argument or set `SAFE_LLM_REBUILD=1`:
 
 ```sh
-/path/to/safe-llm/claude/run.sh --rebuild
-/path/to/safe-llm/codex/run.sh --rebuild
+/path/to/safe-llm/claude.sh --rebuild
+/path/to/safe-llm/codex.sh --rebuild
 
-SAFE_LLM_REBUILD=1 /path/to/safe-llm/claude/run.sh
-SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex/run.sh
+SAFE_LLM_REBUILD=1 /path/to/safe-llm/claude.sh
+SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex.sh
 ```
 
 ### Requirements
@@ -85,6 +88,13 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex/run.sh
   optionally expands the default Plane MCP tool surface.
 - A host-side login for the agent you're launching (`~/.claude` or
   `~/.codex`).
+- Optional Linear credentials can be scoped per agent with
+  `CLAUDE_LINEAR_API_KEY` and `CODEX_LINEAR_API_KEY`. Optional Plane API keys
+  can likewise be scoped per agent with `CLAUDE_PLANE_API_KEY` and
+  `CODEX_PLANE_API_KEY`, falling back to `PLANE_API_KEY` when the scoped value
+  is absent. The launchers and cross-agent wrappers map the active agent's
+  scoped value to the generic environment variable expected by the underlying
+  tool (`LINEAR_API_KEY` or `PLANE_API_KEY`).
 
 ### Local agent environment
 
@@ -179,12 +189,14 @@ Plane MCP is integrated through the official server and a local stdio wrapper:
   expose the full Plane MCP tool surface, but the larger `tools/list` response
   was the reason the wrapper was added. Keep the wrapper unless Codex startup
   has been revalidated against the full upstream tool set.
-- `PLANE_BASE_URL`, `PLANE_API_KEY`, and `PLANE_WORKSPACE_SLUG` are passed into
-  the container. Codex also lists these names in `mcp_servers.plane.env_vars`
-  so the MCP subprocess inherits them without writing secret values into CLI
-  arguments or config files. `UV_CACHE_DIR` and `UV_TOOL_DIR` are redirected to
-  `/tmp` so `uvx` does not need to write into the image home when the container
-  runs as the host uid.
+- `PLANE_BASE_URL`, `PLANE_API_KEY`, `CLAUDE_PLANE_API_KEY`,
+  `CODEX_PLANE_API_KEY`, and `PLANE_WORKSPACE_SLUG` are passed into the
+  container. Each active agent maps its scoped Plane key to `PLANE_API_KEY`
+  before starting so the MCP subprocess inherits the right identity without
+  writing secret values into CLI arguments or config files. Codex also lists
+  the generic Plane names in `mcp_servers.plane.env_vars`. `UV_CACHE_DIR` and
+  `UV_TOOL_DIR` are redirected to `/tmp` so `uvx` does not need to write into
+  the image home when the container runs as the host uid.
 - The launchers do not discover Plane credentials or write Plane tokens into
   images or persistent config files.
 
@@ -196,18 +208,82 @@ Tool config and login state are mounted narrowly:
   read-only.
 - On macOS, Claude subscription credentials normally live in the login
   Keychain, which the container cannot read. If `~/.claude/.credentials.json`
-  is absent, `claude/run.sh` extracts the `Claude Code-credentials` Keychain
+  is absent, `claude.sh` extracts the `Claude Code-credentials` Keychain
   item into that path with `0600` permissions before launch, then removes it on
   exit.
 - Codex uses `${CODEX_HOME:-$HOME/.codex}` as the host Codex directory and
-  mounts it at the same path inside the container by default. `HOME` still
-  points at `/home/node` unless `DEV_CONTAINER_HOME` overrides it.
+  mounts it at `/home/node/.codex` inside the container by default. `HOME`
+  still points at `/home/node` unless `DEV_CONTAINER_HOME` overrides it.
 - Codex passes config overrides to rewrite the `chrome-devtools` MCP URL and
   enable Plane when credentials are present.
 - Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml` and
   `agents/manager.md` into `$CODEX_HOME/agents/manager.toml` because Docker
   Desktop cannot reliably nest-mount a file inside an already bind-mounted
   `$CODEX_HOME`; the staged files are removed on exit.
+
+## Cross-agent review
+
+The shared `both` image includes two explicit review wrappers:
+
+- `safe-claude-review` runs Claude as a secondary reviewer from a Codex
+  session.
+- `safe-codex-review` runs Codex as a secondary reviewer from a Claude
+  session.
+
+The wrappers switch only the agent home/config environment, not the Linux user.
+The container process still runs as the host uid/gid so workspace files remain
+owned by the invoking host user. Each wrapper sets `SAFE_LLM_SUBAGENT=1` for
+traceability and injects a prompt-only recursion guard telling the secondary
+reviewer not to invoke Claude, Codex, subagents, review bots, or other
+agent-calling automation.
+
+The wrappers also scope Linear identity for the subprocess:
+
+- `safe-claude-review` maps `CLAUDE_LINEAR_API_KEY` to `LINEAR_API_KEY`.
+- `safe-codex-review` maps `CODEX_LINEAR_API_KEY` to `LINEAR_API_KEY`.
+- If the relevant agent-specific key is absent, `LINEAR_API_KEY` is unset for
+  that subprocess.
+
+The wrappers scope Plane identity the same way, with a generic fallback for
+existing setups:
+
+- `safe-claude-review` maps `CLAUDE_PLANE_API_KEY` to `PLANE_API_KEY` when set.
+- `safe-codex-review` maps `CODEX_PLANE_API_KEY` to `PLANE_API_KEY` when set.
+- If the relevant agent-specific key is absent, the existing `PLANE_API_KEY`
+  value is preserved for backward compatibility.
+
+## Cross-agent invocation outside review
+
+The `safe-claude-review` / `safe-codex-review` wrappers exist only for the
+single-pass review use case. They inject a recursion guard that forbids the
+secondary agent from spawning subagents or calling other agents, so they are
+the wrong tool for any cross-agent work that needs Plane MCP, the `manager`
+subagent, or any other agent-calling automation.
+
+When one primary agent needs to drive the other for non-review work (e.g.
+Claude asking Codex to act on a Plane ticket, or vice versa), invoke the other
+agent's CLI directly inside the sandbox and pass the per-agent secrets
+explicitly. Do not go through the review wrappers.
+
+- Map the scoped Plane key onto the generic name the target agent will use,
+  e.g. `PLANE_API_KEY="$CODEX_PLANE_API_KEY" codex exec ...` when Claude
+  spawns Codex, or `PLANE_API_KEY="$CLAUDE_PLANE_API_KEY" claude --print ...`
+  when Codex spawns Claude. Apply the same pattern for `LINEAR_API_KEY` via
+  `CODEX_LINEAR_API_KEY` / `CLAUDE_LINEAR_API_KEY` when Linear is in scope.
+- `codex exec` invoked directly inside the sandbox does NOT inherit the
+  `mcp_servers.*` overrides that `codex.sh` passes at launch. When the target
+  agent needs Plane MCP, re-pass the same `-c mcp_servers.plane.*` overrides
+  used by `codex.sh` (command `uvx`, args
+  `["--from","plane-mcp-server","python","/tmp/plane-mcp-stdio-wrapper.py","stdio"]`,
+  `env_vars` listing `UV_CACHE_DIR`, `UV_TOOL_DIR`, `PLANE_MCP_TOOL_GROUPS`,
+  `PLANE_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE_SLUG`,
+  `startup_timeout_sec=30`). Pass `--dangerously-bypass-approvals-and-sandbox`
+  on `codex exec` so MCP tool calls are not auto-cancelled.
+- Prefer asking the target agent to call the MCP tools directly rather than
+  routing through its `manager` / `devops` subagent. The full-history subagent
+  fork path has rejected MCP tool calls with `user cancelled MCP tool call` in
+  this sandbox, while the same call from the parent `exec` invocation
+  succeeds.
 
 ## Terminal rendering
 

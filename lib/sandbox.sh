@@ -46,10 +46,16 @@ iso_to_epoch() {
 ensure_image_current() {
   local image="$1"
   local dockerfile_dir="$2"
+  local target="${3:-}"
   local image_created_at
   local image_created_epoch
   local dockerfile_epoch
   local image_needs_build
+  local build_args=()
+
+  if [[ -n "$target" ]]; then
+    build_args+=(--target "$target")
+  fi
 
   if [[ "${SAFE_LLM_REBUILD:-}" == 1 ]]; then
     image_needs_build=1
@@ -60,6 +66,14 @@ ensure_image_current() {
     else
       image_created_epoch="$(iso_to_epoch "$image_created_at")"
       dockerfile_epoch="$(file_mtime "$dockerfile_dir/Dockerfile")"
+      local dependency
+      for dependency in \
+        "$dockerfile_dir/scripts/safe-claude-review" \
+        "$dockerfile_dir/scripts/safe-codex-review"; do
+        if [[ -f "$dependency" && "$(file_mtime "$dependency")" -gt "$dockerfile_epoch" ]]; then
+          dockerfile_epoch="$(file_mtime "$dependency")"
+        fi
+      done
       if [[ "$dockerfile_epoch" -gt "$image_created_epoch" ]]; then
         image_needs_build=1
       else
@@ -70,9 +84,9 @@ ensure_image_current() {
 
   if [[ "$image_needs_build" == 1 ]]; then
     if [[ "${SAFE_LLM_REBUILD:-}" == 1 ]]; then
-      docker build --pull --no-cache -t "$image" "$dockerfile_dir"
+      docker build --pull --no-cache "${build_args[@]}" -t "$image" "$dockerfile_dir"
     else
-      docker build -t "$image" "$dockerfile_dir"
+      docker build "${build_args[@]}" -t "$image" "$dockerfile_dir"
     fi
   fi
 }

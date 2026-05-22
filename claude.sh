@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE="claude-sandbox"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
 source "$REPO_ROOT/lib/sandbox.sh"
+readonly IMAGE="safe-llm-sandbox"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
 MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
 PLANE_MCP_WRAPPER_FILE="$REPO_ROOT/scripts/plane-mcp-stdio-wrapper.py"
@@ -15,6 +15,8 @@ if [[ "${1:-}" == "--rebuild" ]]; then
 fi
 
 HOST_WORKSPACE="$(pwd)"
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+CODEX_CONTAINER_DIR="${CODEX_CONTAINER_DIR:-/home/node/.codex}"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9222}"
 UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
@@ -22,6 +24,7 @@ UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
 PLANE_MCP_WRAPPER_CONTAINER="${PLANE_MCP_WRAPPER_CONTAINER:-/tmp/plane-mcp-stdio-wrapper.py}"
 CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}"
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
+CLAUDE_PLANE_API_KEY_EFFECTIVE="${CLAUDE_PLANE_API_KEY:-${PLANE_API_KEY:-}}"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
 setup_github_auth_args
 
@@ -35,7 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ensure_image_current "$IMAGE" "$SCRIPT_DIR"
+ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 ensure_chrome_devtools
 
@@ -43,9 +46,14 @@ ensure_chrome_devtools
 # overlay the bundled subagent definitions into the container via nested
 # bind mount (the parent `~/.claude` is already mounted further down).
 mkdir -p "$HOME/.claude/agents"
+mkdir -p "$CODEX_DIR"
 
-cp "$HOME/.claude.json" "$CLAUDE_CONFIG_FILE"
-if [[ -n "${PLANE_API_KEY:-}" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
+if [[ -f "$HOME/.claude.json" ]]; then
+    cp "$HOME/.claude.json" "$CLAUDE_CONFIG_FILE"
+else
+    printf '{}\n' > "$CLAUDE_CONFIG_FILE"
+fi
+if [[ -n "$CLAUDE_PLANE_API_KEY_EFFECTIVE" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
     PLANE_MCP_ENABLED=true
 else
     PLANE_MCP_ENABLED=false
@@ -97,6 +105,7 @@ mv "${CLAUDE_CONFIG_FILE}.tmp" "$CLAUDE_CONFIG_FILE"
 DOCKER_MOUNT_ARGS=(
     -v "$HOST_WORKSPACE:$HOST_WORKSPACE"
     -v "$HOME/.claude":/home/claude/.claude
+    -v "$CODEX_DIR:$CODEX_CONTAINER_DIR"
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
     -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
     -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
@@ -148,6 +157,12 @@ docker run -it --rm \
     "${TERMINAL_ARGS[@]}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
+    -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
+    -e CODEX_CONTAINER_HOME=/home/node \
+    -e CODEX_LINEAR_API_KEY="${CODEX_LINEAR_API_KEY:-}" \
+    -e CLAUDE_LINEAR_API_KEY="${CLAUDE_LINEAR_API_KEY:-}" \
+    -e CODEX_PLANE_API_KEY="${CODEX_PLANE_API_KEY:-}" \
+    -e CLAUDE_PLANE_API_KEY="${CLAUDE_PLANE_API_KEY:-}" \
     -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
     -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
     -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
@@ -158,5 +173,15 @@ docker run -it --rm \
     "${GITHUB_AUTH_ARGS[@]}" \
     "$IMAGE" \
     bash -lc '# The container is the sandbox boundary; skip Claude Code prompts inside it by default.
+        if [[ -n "${CLAUDE_LINEAR_API_KEY:-}" ]]; then
+            export LINEAR_API_KEY="$CLAUDE_LINEAR_API_KEY"
+        else
+            unset LINEAR_API_KEY
+        fi
+        if [[ -n "${CLAUDE_PLANE_API_KEY:-}" ]]; then
+            export PLANE_API_KEY="$CLAUDE_PLANE_API_KEY"
+        elif [[ -z "${PLANE_API_KEY:-}" ]]; then
+            unset PLANE_API_KEY
+        fi
         read -r -a permission_args <<< "${CLAUDE_PERMISSION_ARGS}"
         exec claude "${permission_args[@]}" "$@"' bash "$@"
