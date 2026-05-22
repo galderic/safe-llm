@@ -130,7 +130,7 @@ docker run --rm -it \
   -e NPM_CONFIG_CACHE=/tmp/npm-cache \
   -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
   -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
-  -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items}" \
+  -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
   -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
   -e PLANE_BASE_URL="${PLANE_BASE_URL:-}" \
   -e PLANE_API_KEY="${PLANE_API_KEY:-}" \

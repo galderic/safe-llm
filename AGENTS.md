@@ -160,13 +160,13 @@ Plane MCP is integrated through the official server and a local stdio wrapper:
   `PLANE_WORKSPACE_SLUG` are present on the host, because the stdio server exits
   during initialization when either is missing.
 - The launchers run Plane through `scripts/plane-mcp-stdio-wrapper.py`, which
-  defaults to `PLANE_MCP_TOOL_GROUPS=work_items` to keep the stdio `tools/list`
-  response small enough for Codex startup. With that default, agents see only
-  the seven work-item tools: create, delete, list, retrieve, retrieve by
-  project identifier and sequence number, search, and update.
+  defaults to `PLANE_MCP_TOOL_GROUPS=work_items,work_item_comments,states`.
+  With that default, agents can manage work items, add comments to work items,
+  and inspect states so they can move work items from one state to another
+  through the work-item update tools.
 - Override `PLANE_MCP_TOOL_GROUPS` with a comma-separated list when a broader
   Plane surface is needed, for example
-  `PLANE_MCP_TOOL_GROUPS=work_items,projects,states,labels`. Supported groups
+  `PLANE_MCP_TOOL_GROUPS=work_items,work_item_comments,states,labels`. Supported groups
   are `cycles`, `epics`, `initiatives`, `intake`, `labels`, `milestones`,
   `modules`, `pages`, `projects`, `states`, `users`,
   `work_item_activities`, `work_item_comments`, `work_item_links`,

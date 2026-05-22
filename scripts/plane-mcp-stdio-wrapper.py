@@ -53,7 +53,7 @@ REGISTRARS = {
     "workspaces": register_workspace_tools,
 }
 
-DEFAULT_GROUPS = "work_items"
+DEFAULT_GROUPS = "work_items,work_item_comments,states"
 
 
 def register_selected_tools(mcp):

@@ -55,7 +55,7 @@ jq \
     --arg plane_wrapper "$PLANE_MCP_WRAPPER_CONTAINER" \
     --arg uv_cache_dir "$UV_CACHE_DIR_CONTAINER" \
     --arg uv_tool_dir "$UV_TOOL_DIR_CONTAINER" \
-    --arg plane_tool_groups "${PLANE_MCP_TOOL_GROUPS:-work_items}" \
+    --arg plane_tool_groups "${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
     '
     def rewrite_args($url):
         [(. // [])[] | select(. != "-y" and . != "chrome-devtools-mcp" and . != "chrome-devtools-mcp@latest")]
@@ -149,7 +149,7 @@ docker run -it --rm \
     -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
     -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
     -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
-    -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items}" \
+    -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
     -e PLANE_BASE_URL="${PLANE_BASE_URL:-}" \
     -e PLANE_API_KEY="${PLANE_API_KEY:-}" \
     -e PLANE_WORKSPACE_SLUG="${PLANE_WORKSPACE_SLUG:-}" \
