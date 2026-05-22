@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
+MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
 PLANE_MCP_WRAPPER_FILE="$REPO_ROOT/scripts/plane-mcp-stdio-wrapper.py"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
@@ -28,14 +29,17 @@ CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS:-Wh
 SSH_ARGS=()
 setup_github_auth_args
 
-# Path under $HOME/.codex where the devops subagent prompt is staged so the
-# parent bind mount carries it into the container (see below for rationale).
-STAGED_DEVOPS_AGENT_PATH=""
+# Paths under $HOME/.codex where bundled subagent prompts are staged so the
+# parent bind mount carries them into the container (see below for rationale).
+STAGED_AGENT_PATHS=()
 
 cleanup() {
-  if [[ -n "$STAGED_DEVOPS_AGENT_PATH" && -f "$STAGED_DEVOPS_AGENT_PATH" ]]; then
-    rm -f -- "$STAGED_DEVOPS_AGENT_PATH"
-  fi
+  local staged_agent_path
+  for staged_agent_path in "${STAGED_AGENT_PATHS[@]}"; do
+    if [[ -f "$staged_agent_path" ]]; then
+      rm -f -- "$staged_agent_path"
+    fi
+  done
   sandbox_cleanup
 }
 trap cleanup EXIT
@@ -76,30 +80,51 @@ else
   )
 fi
 
-# Register a devops-only subagent as a standalone custom-agent TOML file.
-# The parent $CODEX_DIR bind mount carries it into the container, and cleanup
-# removes it from the host after the session.
+# Register bundled subagents as standalone custom-agent TOML files. The parent
+# $CODEX_DIR bind mount carries them into the container, and cleanup removes
+# them from the host after the session.
 mkdir -p "$CODEX_DIR/agents"
-STAGED_DEVOPS_AGENT_PATH="$CODEX_DIR/agents/devops.toml"
-python3 - "$DEVOPS_AGENT_FILE" "$STAGED_DEVOPS_AGENT_PATH" <<'PY'
+stage_codex_agent() {
+  local source_file="$1"
+  local target_file="$2"
+  local codex_name="$3"
+  local codex_description="$4"
+
+  python3 - "$source_file" "$target_file" "$codex_name" "$codex_description" <<'PY'
 import json
 import pathlib
 import sys
 
 source = pathlib.Path(sys.argv[1])
 target = pathlib.Path(sys.argv[2])
+name = sys.argv[3]
+description = sys.argv[4]
 instructions = source.read_text()
 if instructions.startswith("---\n"):
     _, separator, body = instructions.partition("\n---\n")
     if separator:
         instructions = body.lstrip()
 target.write_text(
-    'name = "devops"\n'
-    'description = "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."\n'
+    f"name = {json.dumps(name)}\n"
+    f"description = {json.dumps(description)}\n"
     'model = "gpt-5.4-mini"\n'
     f'developer_instructions = {json.dumps(instructions)}\n'
 )
 PY
+  STAGED_AGENT_PATHS+=("$target_file")
+}
+
+stage_codex_agent \
+  "$DEVOPS_AGENT_FILE" \
+  "$CODEX_DIR/agents/devops.toml" \
+  "devops" \
+  "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."
+
+stage_codex_agent \
+  "$MANAGER_AGENT_FILE" \
+  "$CODEX_DIR/agents/manager.toml" \
+  "manager" \
+  "Plane manager subagent. Use for querying tickets, updating work items, adding comments, and changing Plane states."
 
 if [[ "$#" -eq 0 ]]; then
   CONTAINER_CMD=(

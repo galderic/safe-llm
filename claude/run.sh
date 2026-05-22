@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$REPO_ROOT/lib/sandbox.sh"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
+MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
 PLANE_MCP_WRAPPER_FILE="$REPO_ROOT/scripts/plane-mcp-stdio-wrapper.py"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
@@ -39,7 +40,7 @@ setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 ensure_chrome_devtools
 
 # Ensure the user-level Claude agents dir exists on the host so we can
-# overlay the devops subagent definition into the container via a nested
+# overlay the bundled subagent definitions into the container via nested
 # bind mount (the parent `~/.claude` is already mounted further down).
 mkdir -p "$HOME/.claude/agents"
 
@@ -98,6 +99,7 @@ DOCKER_MOUNT_ARGS=(
     -v "$HOME/.claude":/home/claude/.claude
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
     -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
+    -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
     -v "$PLANE_MCP_WRAPPER_FILE:$PLANE_MCP_WRAPPER_CONTAINER:ro"
 )
 

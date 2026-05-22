@@ -21,27 +21,30 @@ sandbox that:
   browser from inside the sandbox.
 - Registers the Plane MCP server when explicit Plane credentials are present,
   with a constrained default tool surface for predictable agent startup.
-- Registers a scoped `devops` subagent (CI/CD, infra, Docker/K8s,
-  observability, release engineering) defined in `agents/devops.md`.
+- Registers scoped `devops` and `manager` subagents. `devops` covers CI/CD,
+  infra, Docker/K8s, observability, and release engineering. `manager` covers
+  Plane work item queries, updates, comments, and state changes.
 
 ## Layout
 
 - `claude/` — `Dockerfile` + `run.sh` for the Claude Code sandbox
   (`claude-sandbox` image, Node 22 + Python + JDK 17 + Maven + `gh`).
   Installs Claude via the official `claude.ai/install.sh` script, configures
-  the Chrome DevTools and Plane MCP servers, and overlays the devops subagent
+  the Chrome DevTools and Plane MCP servers, and overlays bundled subagents
   into `~/.claude/agents/`.
 - `codex/` — `Dockerfile` + `run.sh` for the Codex sandbox
   (`codex-sandbox` image, Node 22 + Python + ripgrep + `socat`). Installs
-  `@openai/codex` globally, rewrites `~/.codex/config.toml` to point the
-  `chrome-devtools` MCP at the host-gateway proxy, configures the Plane MCP
-  server, and appends an `[agents.devops]` block for the devops subagent.
+  `@openai/codex` globally, passes runtime config overrides for the
+  Chrome DevTools and Plane MCP servers, and stages bundled custom-agent TOML
+  files for the subagents.
 - `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
   GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
   passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
   shell utilities.
 - `agents/devops.md` — system prompt for the devops subagent, mounted or
   staged into the container by the launchers.
+- `agents/manager.md` — system prompt for the Plane manager subagent, mounted
+  or staged into the container by the launchers.
 - `scripts/plane-mcp-stdio-wrapper.py` — wrapper around the official
   `plane-mcp-server` stdio entrypoint that limits which Plane MCP tool groups
   are registered.
@@ -189,7 +192,8 @@ Tool config and login state are mounted narrowly:
 
 - Claude mounts host `~/.claude` at `/home/claude/.claude`, mounts a temporary
   rewritten `.claude.json` at `/home/claude/.claude.json`, and overlays
-  `agents/devops.md` into `/home/claude/.claude/agents/devops.md` read-only.
+  `agents/devops.md` and `agents/manager.md` into `/home/claude/.claude/agents/`
+  read-only.
 - On macOS, Claude subscription credentials normally live in the login
   Keychain, which the container cannot read. If `~/.claude/.credentials.json`
   is absent, `claude/run.sh` extracts the `Claude Code-credentials` Keychain
@@ -198,12 +202,12 @@ Tool config and login state are mounted narrowly:
 - Codex uses `${CODEX_HOME:-$HOME/.codex}` as the host Codex directory and
   mounts it at the same path inside the container by default. `HOME` still
   points at `/home/node` unless `DEV_CONTAINER_HOME` overrides it.
-- Codex temporarily edits `config.toml` to rewrite the `chrome-devtools` MCP
-  URL and append the `devops` agent block, then restores the original file from
-  a backup on exit.
-- Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml`
-  because Docker Desktop cannot reliably nest-mount a file inside an already
-  bind-mounted `$CODEX_HOME`; the staged file is removed on exit.
+- Codex passes config overrides to rewrite the `chrome-devtools` MCP URL and
+  enable Plane when credentials are present.
+- Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml` and
+  `agents/manager.md` into `$CODEX_HOME/agents/manager.toml` because Docker
+  Desktop cannot reliably nest-mount a file inside an already bind-mounted
+  `$CODEX_HOME`; the staged files are removed on exit.
 
 ## Terminal rendering
 
