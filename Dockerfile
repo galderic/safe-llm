@@ -1,3 +1,8 @@
+FROM golang:1.25-bookworm AS github-mcp-builder
+
+ARG GITHUB_MCP_SERVER_VERSION=v1.0.5
+RUN go install github.com/github/github-mcp-server/cmd/github-mcp-server@${GITHUB_MCP_SERVER_VERSION}
+
 FROM node:22-bookworm AS base
 
 LABEL org.opencontainers.image.title="safe-llm-sandbox"
@@ -27,6 +32,8 @@ RUN apt-get update \
 
 RUN npm install -g chrome-devtools-mcp@latest \
   && python3 -m pip install --break-system-packages --no-cache-dir uv
+
+COPY --from=github-mcp-builder /go/bin/github-mcp-server /usr/local/bin/github-mcp-server
 
 RUN useradd -m -s /bin/bash claude \
   && mkdir -p /home/node/.codex /home/claude/.claude \

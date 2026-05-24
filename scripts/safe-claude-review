@@ -7,11 +7,19 @@ else
   unset LINEAR_API_KEY
 fi
 
-if [[ -n "${CLAUDE_PLANE_API_KEY:-}" ]]; then
-  export PLANE_API_KEY="$CLAUDE_PLANE_API_KEY"
-elif [[ -z "${PLANE_API_KEY:-}" ]]; then
-  unset PLANE_API_KEY
+if [[ -n "${CLAUDE_GITHUB_TOKEN:-}" ]]; then
+  export GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN"
+elif [[ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]]; then
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    export GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"
+  elif [[ -n "${GH_TOKEN:-}" ]]; then
+    export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
+  else
+    unset GITHUB_PERSONAL_ACCESS_TOKEN
+  fi
 fi
+
+export GITHUB_TOOLSETS="${GITHUB_MCP_TOOLSETS:-context,issues,pull_requests,projects}"
 
 export HOME=/home/claude
 export SAFE_LLM_SUBAGENT=1

@@ -7,7 +7,6 @@ source "$REPO_ROOT/lib/sandbox.sh"
 readonly IMAGE="safe-llm-sandbox"
 DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
 MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
-PLANE_MCP_WRAPPER_FILE="$REPO_ROOT/scripts/plane-mcp-stdio-wrapper.py"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
     SAFE_LLM_REBUILD=1
@@ -21,10 +20,10 @@ CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9222}"
 UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
 UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
-PLANE_MCP_WRAPPER_CONTAINER="${PLANE_MCP_WRAPPER_CONTAINER:-/tmp/plane-mcp-stdio-wrapper.py}"
+GITHUB_MCP_TOOLSETS="${GITHUB_MCP_TOOLSETS:-context,issues,pull_requests,projects}"
 CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}"
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
-CLAUDE_PLANE_API_KEY_EFFECTIVE="${CLAUDE_PLANE_API_KEY:-${PLANE_API_KEY:-}}"
+CLAUDE_GITHUB_TOKEN_EFFECTIVE="${CLAUDE_GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}}"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
 setup_github_auth_args
 
@@ -42,9 +41,8 @@ ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 ensure_chrome_devtools
 
-# Ensure the user-level Claude agents dir exists on the host so we can
-# overlay the bundled subagent definitions into the container via nested
-# bind mount (the parent `~/.claude` is already mounted further down).
+# Ensure the user-level Claude agents dir exists on the host so we can stage
+# bundled subagent definitions before mounting the parent `~/.claude`.
 mkdir -p "$HOME/.claude/agents"
 mkdir -p "$CODEX_DIR"
 
@@ -53,18 +51,15 @@ if [[ -f "$HOME/.claude.json" ]]; then
 else
     printf '{}\n' > "$CLAUDE_CONFIG_FILE"
 fi
-if [[ -n "$CLAUDE_PLANE_API_KEY_EFFECTIVE" && -n "${PLANE_WORKSPACE_SLUG:-}" ]]; then
-    PLANE_MCP_ENABLED=true
+if [[ -n "$CLAUDE_GITHUB_TOKEN_EFFECTIVE" ]]; then
+    GITHUB_MCP_ENABLED=true
 else
-    PLANE_MCP_ENABLED=false
+    GITHUB_MCP_ENABLED=false
 fi
 jq \
     --arg browser_url "$DEVTOOLS_BROWSER_URL" \
-    --argjson plane_enabled "$PLANE_MCP_ENABLED" \
-    --arg plane_wrapper "$PLANE_MCP_WRAPPER_CONTAINER" \
-    --arg uv_cache_dir "$UV_CACHE_DIR_CONTAINER" \
-    --arg uv_tool_dir "$UV_TOOL_DIR_CONTAINER" \
-    --arg plane_tool_groups "${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
+    --argjson github_enabled "$GITHUB_MCP_ENABLED" \
+    --arg github_toolsets "$GITHUB_MCP_TOOLSETS" \
     '
     def rewrite_args($url):
         [(. // [])[] | select(. != "-y" and . != "chrome-devtools-mcp" and . != "chrome-devtools-mcp@latest")]
@@ -73,20 +68,18 @@ jq \
     def normalize_devtools($url):
         .command = "chrome-devtools-mcp"
         | .args = (.args | rewrite_args($url));
-    def normalize_plane:
-        .command = "uvx"
-        | .args = ["--from", "plane-mcp-server", "python", $plane_wrapper, "stdio"]
+    def normalize_github:
+        .command = "github-mcp-server"
+        | .args = ["stdio"]
         | .env = ((.env // {}) + {
-            "UV_CACHE_DIR": $uv_cache_dir,
-            "UV_TOOL_DIR": $uv_tool_dir,
-            "PLANE_MCP_TOOL_GROUPS": $plane_tool_groups
+            "GITHUB_TOOLSETS": $github_toolsets
           });
     .mcpServers = ((.mcpServers // {}))
     | .mcpServers["chrome-devtools"] = ((.mcpServers["chrome-devtools"] // {}) | normalize_devtools($browser_url))
-    | if $plane_enabled then
-        .mcpServers["plane"] = ((.mcpServers["plane"] // {}) | normalize_plane)
+    | if $github_enabled then
+        .mcpServers["github"] = ((.mcpServers["github"] // {}) | normalize_github)
       else
-        del(.mcpServers["plane"])
+        del(.mcpServers["github"])
       end
     | if (.projects? and (.projects | type == "object")) then
         .projects |= with_entries(
@@ -107,10 +100,20 @@ DOCKER_MOUNT_ARGS=(
     -v "$HOME/.claude":/home/claude/.claude
     -v "$CODEX_DIR:$CODEX_CONTAINER_DIR"
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
-    -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
-    -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
-    -v "$PLANE_MCP_WRAPPER_FILE:$PLANE_MCP_WRAPPER_CONTAINER:ro"
 )
+
+if [[ "$HOST_OS" == "Darwin" ]]; then
+    # Docker Desktop cannot reliably create nested file bind mountpoints inside
+    # another bind-mounted directory, so stage the bundled agents into the
+    # parent $HOME/.claude mount and restore any pre-existing files on exit.
+    stage_file_with_restore "$DEVOPS_AGENT_FILE" "$HOME/.claude/agents/devops.md"
+    stage_file_with_restore "$MANAGER_AGENT_FILE" "$HOME/.claude/agents/manager.md"
+else
+    DOCKER_MOUNT_ARGS+=(
+        -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
+        -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
+    )
+fi
 
 # Provide subscription-based OAuth credentials to the Linux container.
 #
@@ -161,15 +164,14 @@ docker run -it --rm \
     -e CODEX_CONTAINER_HOME=/home/node \
     -e CODEX_LINEAR_API_KEY="${CODEX_LINEAR_API_KEY:-}" \
     -e CLAUDE_LINEAR_API_KEY="${CLAUDE_LINEAR_API_KEY:-}" \
-    -e CODEX_PLANE_API_KEY="${CODEX_PLANE_API_KEY:-}" \
-    -e CLAUDE_PLANE_API_KEY="${CLAUDE_PLANE_API_KEY:-}" \
+    -e CODEX_GITHUB_TOKEN="${CODEX_GITHUB_TOKEN:-}" \
+    -e CLAUDE_GITHUB_TOKEN="${CLAUDE_GITHUB_TOKEN:-}" \
+    -e GITHUB_PERSONAL_ACCESS_TOKEN="${GITHUB_PERSONAL_ACCESS_TOKEN:-}" \
+    -e GITHUB_MCP_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
+    -e GITHUB_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
     -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
     -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
     -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
-    -e PLANE_MCP_TOOL_GROUPS="${PLANE_MCP_TOOL_GROUPS:-work_items,work_item_comments,states}" \
-    -e PLANE_BASE_URL="${PLANE_BASE_URL:-}" \
-    -e PLANE_API_KEY="${PLANE_API_KEY:-}" \
-    -e PLANE_WORKSPACE_SLUG="${PLANE_WORKSPACE_SLUG:-}" \
     "${GITHUB_AUTH_ARGS[@]}" \
     "$IMAGE" \
     bash -lc '# The container is the sandbox boundary; skip Claude Code prompts inside it by default.
@@ -178,10 +180,17 @@ docker run -it --rm \
         else
             unset LINEAR_API_KEY
         fi
-        if [[ -n "${CLAUDE_PLANE_API_KEY:-}" ]]; then
-            export PLANE_API_KEY="$CLAUDE_PLANE_API_KEY"
-        elif [[ -z "${PLANE_API_KEY:-}" ]]; then
-            unset PLANE_API_KEY
+        if [[ -n "${CLAUDE_GITHUB_TOKEN:-}" ]]; then
+            export GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN"
+        elif [[ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]]; then
+            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                export GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"
+            elif [[ -n "${GH_TOKEN:-}" ]]; then
+                export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
+            else
+                unset GITHUB_PERSONAL_ACCESS_TOKEN
+            fi
         fi
+        export GITHUB_TOOLSETS="${GITHUB_MCP_TOOLSETS}"
         read -r -a permission_args <<< "${CLAUDE_PERMISSION_ARGS}"
         exec claude "${permission_args[@]}" "$@"' bash "$@"

@@ -19,25 +19,25 @@ sandbox that:
 - Bridges the host's Chrome DevTools endpoint into the container via a
   `socat` proxy so the `chrome-devtools` MCP server can drive the host
   browser from inside the sandbox.
-- Registers the Plane MCP server when explicit Plane credentials are present,
-  with a constrained default tool surface for predictable agent startup.
+- Registers the official GitHub MCP server when a GitHub token is present,
+  with a constrained default toolset that includes GitHub Projects.
 - Registers scoped `devops` and `manager` subagents. `devops` covers CI/CD,
   infra, Docker/K8s, observability, and release engineering. `manager` covers
-  Plane work item queries, updates, comments, and state changes.
+  GitHub Projects, issues, pull requests, comments, and project item updates.
 
 ## Layout
 
 - `Dockerfile` — shared multi-target sandbox image. The `both` target installs
   Claude Code, OpenAI Codex, shared CLI dependencies, Chrome DevTools MCP, and
-  the cross-agent review wrappers.
+  the GitHub MCP server, and the cross-agent review wrappers.
 - `claude.sh` — launcher for the Claude Code sandbox. It starts the shared
   `safe-llm-sandbox` image with Claude as the primary agent, configures the
-  Chrome DevTools and Plane MCP servers, overlays bundled Claude subagents into
-  `~/.claude/agents/`, and also mounts Codex config so `safe-codex-review` is
-  available inside the sandbox.
+  Chrome DevTools and GitHub MCP servers, makes bundled Claude subagents
+  available in `~/.claude/agents/`, and also mounts Codex config so
+  `safe-codex-review` is available inside the sandbox.
 - `codex.sh` — launcher for the Codex sandbox. It starts the shared
   `safe-llm-sandbox` image with Codex as the primary agent, passes runtime
-  config overrides for the Chrome DevTools and Plane MCP servers, stages
+  config overrides for the Chrome DevTools and GitHub MCP servers, stages
   bundled custom-agent TOML files for Codex subagents, and also mounts Claude
   config so `safe-claude-review` is available inside the sandbox.
 - `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
@@ -46,11 +46,8 @@ sandbox that:
   shell utilities.
 - `agents/devops.md` — system prompt for the devops subagent, mounted or
   staged into the container by the launchers.
-- `agents/manager.md` — system prompt for the Plane manager subagent, mounted
+- `agents/manager.md` — system prompt for the GitHub Projects manager subagent, mounted
   or staged into the container by the launchers.
-- `scripts/plane-mcp-stdio-wrapper.py` — wrapper around the official
-  `plane-mcp-server` stdio entrypoint that limits which Plane MCP tool groups
-  are registered.
 
 ## Usage
 
@@ -82,19 +79,19 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex.sh
 - Chrome running with `--remote-debugging-port=9222` (or override via
   `CHROME_DEVTOOLS_PORT` / `DEVTOOLS_PROXY_PORT`) if you want the
   `chrome-devtools` MCP to work.
-- Plane MCP credentials in the environment if you want the `plane` MCP to be
-  registered: `PLANE_API_KEY` and `PLANE_WORKSPACE_SLUG`. `PLANE_BASE_URL` is
-  optional and defaults to Plane Cloud when unset. `PLANE_MCP_TOOL_GROUPS`
-  optionally expands the default Plane MCP tool surface.
+- GitHub credentials in the environment if you want the `github` MCP to be
+  registered. Prefer agent-scoped tokens: `CLAUDE_GITHUB_TOKEN` for Claude and
+  `CODEX_GITHUB_TOKEN` for Codex. `GITHUB_PERSONAL_ACCESS_TOKEN`,
+  `GITHUB_TOKEN`, or `GH_TOKEN` are accepted as fallbacks.
 - A host-side login for the agent you're launching (`~/.claude` or
   `~/.codex`).
 - Optional Linear credentials can be scoped per agent with
-  `CLAUDE_LINEAR_API_KEY` and `CODEX_LINEAR_API_KEY`. Optional Plane API keys
-  can likewise be scoped per agent with `CLAUDE_PLANE_API_KEY` and
-  `CODEX_PLANE_API_KEY`, falling back to `PLANE_API_KEY` when the scoped value
-  is absent. The launchers and cross-agent wrappers map the active agent's
-  scoped value to the generic environment variable expected by the underlying
-  tool (`LINEAR_API_KEY` or `PLANE_API_KEY`).
+  `CLAUDE_LINEAR_API_KEY` and `CODEX_LINEAR_API_KEY`. Optional GitHub MCP
+  tokens can likewise be scoped per agent with `CLAUDE_GITHUB_TOKEN` and
+  `CODEX_GITHUB_TOKEN`, falling back to generic GitHub token variables when the
+  scoped value is absent. The launchers and cross-agent wrappers map the active
+  agent's scoped value to the generic environment variable expected by the
+  underlying tool (`LINEAR_API_KEY` or `GITHUB_PERSONAL_ACCESS_TOKEN`).
 
 ### Local agent environment
 
@@ -162,50 +159,41 @@ GitHub HTTPS auth is forwarded without writing credentials into images:
 - Claude also mounts the host `~/.gitconfig` read-only when present. Codex
   currently does not.
 
-Plane MCP is integrated through the official server and a local stdio wrapper:
+GitHub Projects MCP is integrated through the official GitHub MCP server:
 
-- Both launchers register the official Python-based `plane-mcp-server` through
-  `uvx --from plane-mcp-server python /tmp/plane-mcp-stdio-wrapper.py stdio`.
-  The wrapper imports the upstream `plane_mcp` package, replaces its tool
-  registration hook, then calls the official stdio entrypoint. It does not
-  implement Plane API behavior itself.
-- The Plane MCP server is registered only when `PLANE_API_KEY` and
-  `PLANE_WORKSPACE_SLUG` are present on the host, because the stdio server exits
-  during initialization when either is missing.
-- The launchers run Plane through `scripts/plane-mcp-stdio-wrapper.py`, which
-  defaults to `PLANE_MCP_TOOL_GROUPS=work_items,work_item_comments,states`.
-  With that default, agents can manage work items, add comments to work items,
-  and inspect states so they can move work items from one state to another
-  through the work-item update tools.
-- Override `PLANE_MCP_TOOL_GROUPS` with a comma-separated list when a broader
-  Plane surface is needed, for example
-  `PLANE_MCP_TOOL_GROUPS=work_items,work_item_comments,states,labels`. Supported groups
-  are `cycles`, `epics`, `initiatives`, `intake`, `labels`, `milestones`,
-  `modules`, `pages`, `projects`, `states`, `users`,
-  `work_item_activities`, `work_item_comments`, `work_item_links`,
-  `work_item_properties`, `work_item_relations`, `work_item_types`,
-  `work_items`, `work_logs`, and `workspaces`.
-- Running the upstream command directly as `uvx plane-mcp-server stdio` would
-  expose the full Plane MCP tool surface, but the larger `tools/list` response
-  was the reason the wrapper was added. Keep the wrapper unless Codex startup
-  has been revalidated against the full upstream tool set.
-- `PLANE_BASE_URL`, `PLANE_API_KEY`, `CLAUDE_PLANE_API_KEY`,
-  `CODEX_PLANE_API_KEY`, and `PLANE_WORKSPACE_SLUG` are passed into the
-  container. Each active agent maps its scoped Plane key to `PLANE_API_KEY`
+- The image builds and installs `github-mcp-server` from the official
+  `github/github-mcp-server` repository. Both launchers register it as
+  `github-mcp-server stdio`.
+- The GitHub MCP server is registered only when a usable token is present. For
+  Claude, token precedence is `CLAUDE_GITHUB_TOKEN`,
+  `GITHUB_PERSONAL_ACCESS_TOKEN`, `GITHUB_TOKEN`, then `GH_TOKEN`. For Codex,
+  token precedence is `CODEX_GITHUB_TOKEN`,
+  `GITHUB_PERSONAL_ACCESS_TOKEN`, `GITHUB_TOKEN`, then `GH_TOKEN`.
+- Each active agent maps its scoped token to `GITHUB_PERSONAL_ACCESS_TOKEN`
   before starting so the MCP subprocess inherits the right identity without
-  writing secret values into CLI arguments or config files. Codex also lists
-  the generic Plane names in `mcp_servers.plane.env_vars`. `UV_CACHE_DIR` and
-  `UV_TOOL_DIR` are redirected to `/tmp` so `uvx` does not need to write into
-  the image home when the container runs as the host uid.
-- The launchers do not discover Plane credentials or write Plane tokens into
+  writing secret values into CLI arguments or config files.
+- The default GitHub MCP toolsets are
+  `context,issues,pull_requests,projects`. Override `GITHUB_MCP_TOOLSETS` with
+  a comma-separated list when a broader or narrower surface is needed. The
+  launchers pass that value to the MCP server as `GITHUB_TOOLSETS`.
+- Classic GitHub personal access tokens and fine-grained personal access
+  tokens can both be used. Fine-grained tokens are preferred when practical
+  because they can be scoped to specific organizations, repositories, and
+  permissions. For organization Projects, ensure the token is authorized for
+  the organization and has the relevant project, issue, and pull request
+  permissions.
+- The launchers do not discover GitHub credentials or write GitHub tokens into
   images or persistent config files.
 
 Tool config and login state are mounted narrowly:
 
 - Claude mounts host `~/.claude` at `/home/claude/.claude`, mounts a temporary
-  rewritten `.claude.json` at `/home/claude/.claude.json`, and overlays
-  `agents/devops.md` and `agents/manager.md` into `/home/claude/.claude/agents/`
-  read-only.
+  rewritten `.claude.json` at `/home/claude/.claude.json`, and makes
+  `agents/devops.md` and `agents/manager.md` available under
+  `/home/claude/.claude/agents/`. On Linux this uses read-only nested file bind
+  mounts. On macOS Docker Desktop, where nested file mounts inside a parent
+  bind mount can fail, the files are staged into host `~/.claude/agents/`
+  before launch and any pre-existing files at those paths are restored on exit.
 - On macOS, Claude subscription credentials normally live in the login
   Keychain, which the container cannot read. If `~/.claude/.credentials.json`
   is absent, `claude.sh` extracts the `Claude Code-credentials` Keychain
@@ -215,11 +203,15 @@ Tool config and login state are mounted narrowly:
   mounts it at `/home/node/.codex` inside the container by default. `HOME`
   still points at `/home/node` unless `DEV_CONTAINER_HOME` overrides it.
 - Codex passes config overrides to rewrite the `chrome-devtools` MCP URL and
-  enable Plane when credentials are present.
+  enable GitHub MCP when credentials are present.
 - Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml` and
   `agents/manager.md` into `$CODEX_HOME/agents/manager.toml` because Docker
   Desktop cannot reliably nest-mount a file inside an already bind-mounted
-  `$CODEX_HOME`; the staged files are removed on exit.
+  `$CODEX_HOME`; the staged files are removed on exit. For optional
+  `safe-claude-review` support, Codex also exposes the bundled Claude agent
+  markdown files: on Linux via read-only nested file bind mounts, and on macOS
+  by staging them into host `~/.claude/agents/` and restoring any pre-existing
+  files on exit.
 
 ## Cross-agent review
 
@@ -244,39 +236,42 @@ The wrappers also scope Linear identity for the subprocess:
 - If the relevant agent-specific key is absent, `LINEAR_API_KEY` is unset for
   that subprocess.
 
-The wrappers scope Plane identity the same way, with a generic fallback for
+The wrappers scope GitHub MCP identity the same way, with generic fallbacks for
 existing setups:
 
-- `safe-claude-review` maps `CLAUDE_PLANE_API_KEY` to `PLANE_API_KEY` when set.
-- `safe-codex-review` maps `CODEX_PLANE_API_KEY` to `PLANE_API_KEY` when set.
-- If the relevant agent-specific key is absent, the existing `PLANE_API_KEY`
-  value is preserved for backward compatibility.
+- `safe-claude-review` maps `CLAUDE_GITHUB_TOKEN` to
+  `GITHUB_PERSONAL_ACCESS_TOKEN` when set.
+- `safe-codex-review` maps `CODEX_GITHUB_TOKEN` to
+  `GITHUB_PERSONAL_ACCESS_TOKEN` when set.
+- If the relevant agent-specific key is absent, the existing
+  `GITHUB_PERSONAL_ACCESS_TOKEN` value is preserved. If that is absent,
+  `GITHUB_TOKEN` and then `GH_TOKEN` are used as fallbacks.
 
 ## Cross-agent invocation outside review
 
 The `safe-claude-review` / `safe-codex-review` wrappers exist only for the
 single-pass review use case. They inject a recursion guard that forbids the
 secondary agent from spawning subagents or calling other agents, so they are
-the wrong tool for any cross-agent work that needs Plane MCP, the `manager`
+the wrong tool for any cross-agent work that needs GitHub MCP, the `manager`
 subagent, or any other agent-calling automation.
 
 When one primary agent needs to drive the other for non-review work (e.g.
-Claude asking Codex to act on a Plane ticket, or vice versa), invoke the other
+Claude asking Codex to act on a GitHub Project item, or vice versa), invoke the other
 agent's CLI directly inside the sandbox and pass the per-agent secrets
 explicitly. Do not go through the review wrappers.
 
-- Map the scoped Plane key onto the generic name the target agent will use,
-  e.g. `PLANE_API_KEY="$CODEX_PLANE_API_KEY" codex exec ...` when Claude
-  spawns Codex, or `PLANE_API_KEY="$CLAUDE_PLANE_API_KEY" claude --print ...`
-  when Codex spawns Claude. Apply the same pattern for `LINEAR_API_KEY` via
+- Map the scoped GitHub MCP token onto the generic name the target agent will
+  use, e.g.
+  `GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_TOKEN" codex exec ...` when
+  Claude spawns Codex, or
+  `GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN" claude --print ...` when
+  Codex spawns Claude. Apply the same pattern for `LINEAR_API_KEY` via
   `CODEX_LINEAR_API_KEY` / `CLAUDE_LINEAR_API_KEY` when Linear is in scope.
 - `codex exec` invoked directly inside the sandbox does NOT inherit the
   `mcp_servers.*` overrides that `codex.sh` passes at launch. When the target
-  agent needs Plane MCP, re-pass the same `-c mcp_servers.plane.*` overrides
-  used by `codex.sh` (command `uvx`, args
-  `["--from","plane-mcp-server","python","/tmp/plane-mcp-stdio-wrapper.py","stdio"]`,
-  `env_vars` listing `UV_CACHE_DIR`, `UV_TOOL_DIR`, `PLANE_MCP_TOOL_GROUPS`,
-  `PLANE_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE_SLUG`,
+  agent needs GitHub MCP, re-pass the same `-c mcp_servers.github.*` overrides
+  used by `codex.sh` (command `github-mcp-server`, args `["stdio"]`,
+  `env_vars` listing `GITHUB_PERSONAL_ACCESS_TOKEN` and `GITHUB_TOOLSETS`,
   `startup_timeout_sec=30`). Pass `--dangerously-bypass-approvals-and-sandbox`
   on `codex exec` so MCP tool calls are not auto-cancelled.
 - Prefer asking the target agent to call the MCP tools directly rather than
