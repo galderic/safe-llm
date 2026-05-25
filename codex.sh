@@ -22,9 +22,11 @@ NODE_MODULES_VOLUME="${DEV_CONTAINER_NODE_MODULES_VOLUME:-${PROJECT_NAME}-node-m
 UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
 UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
 GITHUB_MCP_TOOLSETS="${GITHUB_MCP_TOOLSETS:-context,issues,pull_requests,projects}"
+if [[ -z "${CODEX_GITHUB_TOKEN:-}" ]]; then
+  echo "CODEX_GITHUB_TOKEN is required to launch the Codex sandbox." >&2
+  exit 1
+fi
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
-CODEX_GITHUB_TOKEN_EFFECTIVE="${CODEX_GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}}"
-CLAUDE_GITHUB_TOKEN_EFFECTIVE="${CLAUDE_GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}}"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
 CHROME_DEVTOOLS_PORT="${CHROME_DEVTOOLS_PORT:-9222}"
 DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9223}"
@@ -76,25 +78,15 @@ CODEX_CONFIG_OVERRIDES=(
   -c 'mcp_servers.chrome-devtools.env={ NPM_CONFIG_CACHE = "/tmp/npm-cache" }'
 )
 
-if [[ -n "$CODEX_GITHUB_TOKEN_EFFECTIVE" ]]; then
-  CODEX_CONFIG_OVERRIDES+=(
-    -c 'mcp_servers.github.enabled=true'
-    -c 'mcp_servers.github.required=false'
-    -c 'mcp_servers.github.command="github-mcp-server"'
-    -c 'mcp_servers.github.args=["stdio"]'
-    -c 'mcp_servers.github.env={}'
-    -c 'mcp_servers.github.env_vars=["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS"]'
-    -c 'mcp_servers.github.startup_timeout_sec=30'
-  )
-else
-  CODEX_CONFIG_OVERRIDES+=(
-    -c 'mcp_servers.github.enabled=false'
-    -c 'mcp_servers.github.command="github-mcp-server"'
-    -c 'mcp_servers.github.args=["stdio"]'
-    -c 'mcp_servers.github.env={}'
-    -c 'mcp_servers.github.env_vars=[]'
-  )
-fi
+CODEX_CONFIG_OVERRIDES+=(
+  -c 'mcp_servers.github.enabled=true'
+  -c 'mcp_servers.github.required=false'
+  -c 'mcp_servers.github.command="github-mcp-server"'
+  -c 'mcp_servers.github.args=["stdio"]'
+  -c 'mcp_servers.github.env={}'
+  -c 'mcp_servers.github.env_vars=["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS"]'
+  -c 'mcp_servers.github.startup_timeout_sec=30'
+)
 
 # Register bundled subagents as standalone custom-agent TOML files. The parent
 # $CODEX_DIR bind mount carries them into the container, and cleanup removes
@@ -107,7 +99,7 @@ if [[ -f "$HOME/.claude.json" ]]; then
 else
   printf '{}\n' > "$CLAUDE_CONFIG_FILE"
 fi
-if [[ -n "$CLAUDE_GITHUB_TOKEN_EFFECTIVE" ]]; then
+if [[ -n "${CLAUDE_GITHUB_TOKEN:-}" ]]; then
   GITHUB_MCP_ENABLED=true
 else
   GITHUB_MCP_ENABLED=false
@@ -269,17 +261,7 @@ docker run --rm -it \
     else
       unset LINEAR_API_KEY
     fi
-    if [[ -n "${CODEX_GITHUB_TOKEN:-}" ]]; then
-      export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_TOKEN"
-    elif [[ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]]; then
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        export GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"
-      elif [[ -n "${GH_TOKEN:-}" ]]; then
-        export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
-      else
-        unset GITHUB_PERSONAL_ACCESS_TOKEN
-      fi
-    fi
+    export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_TOKEN"
     export GITHUB_TOOLSETS="${GITHUB_MCP_TOOLSETS}"
     exec "$@"
   ' bash "${CONTAINER_CMD[@]}"

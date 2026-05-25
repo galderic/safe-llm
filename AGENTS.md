@@ -79,19 +79,16 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex.sh
 - Chrome running with `--remote-debugging-port=9222` (or override via
   `CHROME_DEVTOOLS_PORT` / `DEVTOOLS_PROXY_PORT`) if you want the
   `chrome-devtools` MCP to work.
-- GitHub credentials in the environment if you want the `github` MCP to be
-  registered. Prefer agent-scoped tokens: `CLAUDE_GITHUB_TOKEN` for Claude and
-  `CODEX_GITHUB_TOKEN` for Codex. `GITHUB_PERSONAL_ACCESS_TOKEN`,
-  `GITHUB_TOKEN`, or `GH_TOKEN` are accepted as fallbacks.
+- Agent-scoped GitHub credentials in the environment. `claude.sh` requires
+  `CLAUDE_GITHUB_TOKEN`; `codex.sh` requires `CODEX_GITHUB_TOKEN`.
 - A host-side login for the agent you're launching (`~/.claude` or
   `~/.codex`).
 - Optional Linear credentials can be scoped per agent with
-  `CLAUDE_LINEAR_API_KEY` and `CODEX_LINEAR_API_KEY`. Optional GitHub MCP
-  tokens can likewise be scoped per agent with `CLAUDE_GITHUB_TOKEN` and
-  `CODEX_GITHUB_TOKEN`, falling back to generic GitHub token variables when the
-  scoped value is absent. The launchers and cross-agent wrappers map the active
-  agent's scoped value to the generic environment variable expected by the
-  underlying tool (`LINEAR_API_KEY` or `GITHUB_PERSONAL_ACCESS_TOKEN`).
+  `CLAUDE_LINEAR_API_KEY` and `CODEX_LINEAR_API_KEY`. GitHub MCP tokens are
+  scoped per agent with `CLAUDE_GITHUB_TOKEN` and `CODEX_GITHUB_TOKEN`. The
+  launchers and cross-agent wrappers map the active agent's scoped value to the
+  generic environment variable expected by the underlying tool
+  (`LINEAR_API_KEY` or `GITHUB_PERSONAL_ACCESS_TOKEN`).
 
 ### Local agent environment
 
@@ -164,11 +161,9 @@ GitHub Projects MCP is integrated through the official GitHub MCP server:
 - The image builds and installs `github-mcp-server` from the official
   `github/github-mcp-server` repository. Both launchers register it as
   `github-mcp-server stdio`.
-- The GitHub MCP server is registered only when a usable token is present. For
-  Claude, token precedence is `CLAUDE_GITHUB_TOKEN`,
-  `GITHUB_PERSONAL_ACCESS_TOKEN`, `GITHUB_TOKEN`, then `GH_TOKEN`. For Codex,
-  token precedence is `CODEX_GITHUB_TOKEN`,
-  `GITHUB_PERSONAL_ACCESS_TOKEN`, `GITHUB_TOKEN`, then `GH_TOKEN`.
+- The GitHub MCP server is registered by the primary launchers only after the
+  required scoped token is present: `CLAUDE_GITHUB_TOKEN` for Claude and
+  `CODEX_GITHUB_TOKEN` for Codex.
 - Each active agent maps its scoped token to `GITHUB_PERSONAL_ACCESS_TOKEN`
   before starting so the MCP subprocess inherits the right identity without
   writing secret values into CLI arguments or config files.

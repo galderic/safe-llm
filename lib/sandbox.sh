@@ -130,7 +130,7 @@ setup_github_auth_args() {
     -e GITHUB_TOKEN
     -e GIT_CONFIG_COUNT=1
     -e GIT_CONFIG_KEY_0=credential.https://github.com.helper
-    -e 'GIT_CONFIG_VALUE_0=!f() { test "$1" = get || exit 0; token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"; test -n "$token" || exit 0; printf "username=x-access-token\npassword=%s\n" "$token"; }; f'
+    -e 'GIT_CONFIG_VALUE_0=!f() { test "$1" = get || exit 0; token="${GITHUB_PERSONAL_ACCESS_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"; test -n "$token" || exit 0; printf "username=x-access-token\npassword=%s\n" "$token"; }; f'
   )
 }
 

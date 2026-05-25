@@ -22,8 +22,11 @@ UV_CACHE_DIR_CONTAINER="${UV_CACHE_DIR_CONTAINER:-/tmp/uv-cache}"
 UV_TOOL_DIR_CONTAINER="${UV_TOOL_DIR_CONTAINER:-/tmp/uv-tools}"
 GITHUB_MCP_TOOLSETS="${GITHUB_MCP_TOOLSETS:-context,issues,pull_requests,projects}"
 CLAUDE_PERMISSION_ARGS="${CLAUDE_PERMISSION_ARGS:---dangerously-skip-permissions}"
+if [[ -z "${CLAUDE_GITHUB_TOKEN:-}" ]]; then
+    echo "CLAUDE_GITHUB_TOKEN is required to launch the Claude sandbox." >&2
+    exit 1
+fi
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
-CLAUDE_GITHUB_TOKEN_EFFECTIVE="${CLAUDE_GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}}"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
 setup_github_auth_args
 
@@ -51,11 +54,7 @@ if [[ -f "$HOME/.claude.json" ]]; then
 else
     printf '{}\n' > "$CLAUDE_CONFIG_FILE"
 fi
-if [[ -n "$CLAUDE_GITHUB_TOKEN_EFFECTIVE" ]]; then
-    GITHUB_MCP_ENABLED=true
-else
-    GITHUB_MCP_ENABLED=false
-fi
+GITHUB_MCP_ENABLED=true
 jq \
     --arg browser_url "$DEVTOOLS_BROWSER_URL" \
     --argjson github_enabled "$GITHUB_MCP_ENABLED" \
@@ -180,17 +179,7 @@ docker run -it --rm \
         else
             unset LINEAR_API_KEY
         fi
-        if [[ -n "${CLAUDE_GITHUB_TOKEN:-}" ]]; then
-            export GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN"
-        elif [[ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]]; then
-            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-                export GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"
-            elif [[ -n "${GH_TOKEN:-}" ]]; then
-                export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
-            else
-                unset GITHUB_PERSONAL_ACCESS_TOKEN
-            fi
-        fi
+        export GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN"
         export GITHUB_TOOLSETS="${GITHUB_MCP_TOOLSETS}"
         read -r -a permission_args <<< "${CLAUDE_PERMISSION_ARGS}"
         exec claude "${permission_args[@]}" "$@"' bash "$@"
