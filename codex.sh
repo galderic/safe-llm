@@ -56,6 +56,17 @@ setup_host_passwd_args "$IMAGE" "$CONTAINER_HOME" codex
 
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 
+# Docker creates named volumes as root-owned. Codex runs as the host uid/gid,
+# so normalize the dependency volume before mounting it into the workspace.
+ensure_node_modules_volume_owner() {
+  docker run --rm \
+    -v "$NODE_MODULES_VOLUME:/node_modules" \
+    "$IMAGE" \
+    chown -R "$(id -u):$(id -g)" /node_modules
+}
+
+ensure_node_modules_volume_owner
+
 CODEX_CONFIG_OVERRIDES=(
   -c "developer_instructions=\"$CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS\""
   -c 'mcp_servers.chrome-devtools.enabled=true'

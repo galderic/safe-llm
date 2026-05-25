@@ -222,6 +222,13 @@ The shared `both` image includes two explicit review wrappers:
 - `safe-codex-review` runs Codex as a secondary reviewer from a Claude
   session.
 
+Cross-agent code review must go through GitHub pull requests. A primary agent
+that wants review from the other agent should create or update a PR for the
+change, invoke the reviewer with the PR number/URL and branch context, and
+instruct it to publish findings as GitHub PR review comments or issue comments
+on that PR. Do not ask the secondary agent for a direct chat-only review except
+for local debugging of the review wrapper itself.
+
 The wrappers switch only the agent home/config environment, not the Linux user.
 The container process still runs as the host uid/gid so workspace files remain
 owned by the invoking host user. Each wrapper sets `SAFE_LLM_SUBAGENT=1` for
@@ -250,10 +257,10 @@ existing setups:
 ## Cross-agent invocation outside review
 
 The `safe-claude-review` / `safe-codex-review` wrappers exist only for the
-single-pass review use case. They inject a recursion guard that forbids the
-secondary agent from spawning subagents or calling other agents, so they are
-the wrong tool for any cross-agent work that needs GitHub MCP, the `manager`
-subagent, or any other agent-calling automation.
+PR-based review use case. They inject a recursion guard that forbids the
+secondary agent from spawning subagents or calling other agents, so they are the
+wrong tool for any cross-agent work that needs broader GitHub MCP automation,
+the `manager` subagent, or any other agent-calling automation.
 
 When one primary agent needs to drive the other for non-review work (e.g.
 Claude asking Codex to act on a GitHub Project item, or vice versa), invoke the other
