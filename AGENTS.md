@@ -21,9 +21,6 @@ sandbox that:
   browser from inside the sandbox.
 - Registers the official GitHub MCP server when a GitHub token is present,
   with a constrained default toolset that includes GitHub Projects.
-- Registers scoped `devops` and `manager` subagents. `devops` covers CI/CD,
-  infra, Docker/K8s, observability, and release engineering. `manager` covers
-  GitHub Projects, issues, pull requests, comments, and project item updates.
 
 ## Layout
 
@@ -32,22 +29,16 @@ sandbox that:
   the GitHub MCP server, and the cross-agent review wrappers.
 - `claude.sh` — launcher for the Claude Code sandbox. It starts the shared
   `safe-llm-sandbox` image with Claude as the primary agent, configures the
-  Chrome DevTools and GitHub MCP servers, makes bundled Claude subagents
-  available in `~/.claude/agents/`, and also mounts Codex config so
+  Chrome DevTools and GitHub MCP servers, and also mounts Codex config so
   `safe-codex-review` is available inside the sandbox.
 - `codex.sh` — launcher for the Codex sandbox. It starts the shared
   `safe-llm-sandbox` image with Codex as the primary agent, passes runtime
-  config overrides for the Chrome DevTools and GitHub MCP servers, stages
-  bundled custom-agent TOML files for Codex subagents, and also mounts Claude
-  config so `safe-claude-review` is available inside the sandbox.
+  config overrides for the Chrome DevTools and GitHub MCP servers, and also
+  mounts Claude config so `safe-claude-review` is available inside the sandbox.
 - `lib/sandbox.sh` — shared launcher helpers for image rebuild checks,
   GitHub HTTPS auth forwarding, SSH agent / known_hosts forwarding, macOS
   passwd synthesis, Chrome DevTools proxying, Chrome startup, and portable
   shell utilities.
-- `agents/devops.md` — system prompt for the devops subagent, mounted or
-  staged into the container by the launchers.
-- `agents/manager.md` — system prompt for the GitHub Projects manager subagent, mounted
-  or staged into the container by the launchers.
 
 ## Usage
 
@@ -183,12 +174,7 @@ GitHub Projects MCP is integrated through the official GitHub MCP server:
 Tool config and login state are mounted narrowly:
 
 - Claude mounts host `~/.claude` at `/home/claude/.claude`, mounts a temporary
-  rewritten `.claude.json` at `/home/claude/.claude.json`, and makes
-  `agents/devops.md` and `agents/manager.md` available under
-  `/home/claude/.claude/agents/`. On Linux this uses read-only nested file bind
-  mounts. On macOS Docker Desktop, where nested file mounts inside a parent
-  bind mount can fail, the files are staged into host `~/.claude/agents/`
-  before launch and any pre-existing files at those paths are restored on exit.
+  rewritten `.claude.json` at `/home/claude/.claude.json`.
 - On macOS, Claude subscription credentials normally live in the login
   Keychain, which the container cannot read. If `~/.claude/.credentials.json`
   is absent, `claude.sh` extracts the `Claude Code-credentials` Keychain
@@ -199,14 +185,6 @@ Tool config and login state are mounted narrowly:
   still points at `/home/node` unless `DEV_CONTAINER_HOME` overrides it.
 - Codex passes config overrides to rewrite the `chrome-devtools` MCP URL and
   enable GitHub MCP when credentials are present.
-- Codex stages `agents/devops.md` into `$CODEX_HOME/agents/devops.toml` and
-  `agents/manager.md` into `$CODEX_HOME/agents/manager.toml` because Docker
-  Desktop cannot reliably nest-mount a file inside an already bind-mounted
-  `$CODEX_HOME`; the staged files are removed on exit. For optional
-  `safe-claude-review` support, Codex also exposes the bundled Claude agent
-  markdown files: on Linux via read-only nested file bind mounts, and on macOS
-  by staging them into host `~/.claude/agents/` and restoring any pre-existing
-  files on exit.
 
 ## Cross-agent review
 
@@ -254,8 +232,8 @@ existing setups:
 The `safe-claude-review` / `safe-codex-review` wrappers exist only for the
 PR-based review use case. They inject a recursion guard that forbids the
 secondary agent from spawning subagents or calling other agents, so they are the
-wrong tool for any cross-agent work that needs broader GitHub MCP automation,
-the `manager` subagent, or any other agent-calling automation.
+wrong tool for any cross-agent work that needs broader GitHub MCP automation or
+any other agent-calling automation.
 
 When one primary agent needs to drive the other for non-review work (e.g.
 Claude asking Codex to act on a GitHub Project item, or vice versa), invoke the other
@@ -276,11 +254,10 @@ explicitly. Do not go through the review wrappers.
   `env_vars` listing `GITHUB_PERSONAL_ACCESS_TOKEN` and `GITHUB_TOOLSETS`,
   `startup_timeout_sec=30`). Pass `--dangerously-bypass-approvals-and-sandbox`
   on `codex exec` so MCP tool calls are not auto-cancelled.
-- Prefer asking the target agent to call the MCP tools directly rather than
-  routing through its `manager` / `devops` subagent. The full-history subagent
-  fork path has rejected MCP tool calls with `user cancelled MCP tool call` in
-  this sandbox, while the same call from the parent `exec` invocation
-  succeeds.
+- Prefer asking the target agent to call the MCP tools directly. The
+  full-history subagent fork path has rejected MCP tool calls with
+  `user cancelled MCP tool call` in this sandbox, while the same call from the
+  parent `exec` invocation succeeds.
 
 ## Terminal rendering
 

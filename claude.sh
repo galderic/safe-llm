@@ -5,8 +5,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 source "$REPO_ROOT/lib/sandbox.sh"
 readonly IMAGE="safe-llm-sandbox"
-DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
-MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
     SAFE_LLM_REBUILD=1
@@ -44,9 +42,6 @@ ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
 ensure_chrome_devtools
 
-# Ensure the user-level Claude agents dir exists on the host so we can stage
-# bundled subagent definitions before mounting the parent `~/.claude`.
-mkdir -p "$HOME/.claude/agents"
 mkdir -p "$CODEX_DIR"
 
 if [[ -f "$HOME/.claude.json" ]]; then
@@ -100,19 +95,6 @@ DOCKER_MOUNT_ARGS=(
     -v "$CODEX_DIR:$CODEX_CONTAINER_DIR"
     -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json
 )
-
-if [[ "$HOST_OS" == "Darwin" ]]; then
-    # Docker Desktop cannot reliably create nested file bind mountpoints inside
-    # another bind-mounted directory, so stage the bundled agents into the
-    # parent $HOME/.claude mount and restore any pre-existing files on exit.
-    stage_file_with_restore "$DEVOPS_AGENT_FILE" "$HOME/.claude/agents/devops.md"
-    stage_file_with_restore "$MANAGER_AGENT_FILE" "$HOME/.claude/agents/manager.md"
-else
-    DOCKER_MOUNT_ARGS+=(
-        -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
-        -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
-    )
-fi
 
 # Provide subscription-based OAuth credentials to the Linux container.
 #

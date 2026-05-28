@@ -4,8 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 source "$REPO_ROOT/lib/sandbox.sh"
-DEVOPS_AGENT_FILE="$REPO_ROOT/agents/devops.md"
-MANAGER_AGENT_FILE="$REPO_ROOT/agents/manager.md"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
   SAFE_LLM_REBUILD=1
@@ -34,19 +32,9 @@ CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS:-Wh
 SSH_ARGS=()
 setup_github_auth_args
 
-# Paths under $HOME/.codex where bundled Codex subagent prompts are staged so
-# the parent bind mount carries them into the container (see below for
-# rationale).
-STAGED_AGENT_PATHS=()
 STAGED_CREDENTIALS_PATH=""
 
 cleanup() {
-  local staged_agent_path
-  for staged_agent_path in "${STAGED_AGENT_PATHS[@]}"; do
-    if [[ -f "$staged_agent_path" ]]; then
-      rm -f -- "$staged_agent_path"
-    fi
-  done
   sandbox_cleanup
 }
 trap cleanup EXIT
@@ -87,12 +75,6 @@ CODEX_CONFIG_OVERRIDES+=(
   -c 'mcp_servers.github.env_vars=["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOOLSETS"]'
   -c 'mcp_servers.github.startup_timeout_sec=30'
 )
-
-# Register bundled subagents as standalone custom-agent TOML files. The parent
-# $CODEX_DIR bind mount carries them into the container, and cleanup removes
-# them from the host after the session.
-mkdir -p "$CODEX_DIR/agents"
-mkdir -p "$HOME/.claude/agents"
 
 if [[ -f "$HOME/.claude.json" ]]; then
   cp "$HOME/.claude.json" "$CLAUDE_CONFIG_FILE"
@@ -154,62 +136,6 @@ if [[ "$HOST_OS" == "Darwin" && ! -f "$HOME/.claude/.credentials.json" ]]; then
   fi
 fi
 
-stage_codex_agent() {
-  local source_file="$1"
-  local target_file="$2"
-  local codex_name="$3"
-  local codex_description="$4"
-
-  python3 - "$source_file" "$target_file" "$codex_name" "$codex_description" <<'PY'
-import json
-import pathlib
-import sys
-
-source = pathlib.Path(sys.argv[1])
-target = pathlib.Path(sys.argv[2])
-name = sys.argv[3]
-description = sys.argv[4]
-instructions = source.read_text()
-if instructions.startswith("---\n"):
-    _, separator, body = instructions.partition("\n---\n")
-    if separator:
-        instructions = body.lstrip()
-target.write_text(
-    f"name = {json.dumps(name)}\n"
-    f"description = {json.dumps(description)}\n"
-    'model = "gpt-5.4-mini"\n'
-    f'developer_instructions = {json.dumps(instructions)}\n'
-)
-PY
-  STAGED_AGENT_PATHS+=("$target_file")
-}
-
-stage_codex_agent \
-  "$DEVOPS_AGENT_FILE" \
-  "$CODEX_DIR/agents/devops.toml" \
-  "devops" \
-  "Devops-only subagent. Use for CI/CD, deployments, infra, Docker/K8s, observability, secrets, release engineering."
-
-stage_codex_agent \
-  "$MANAGER_AGENT_FILE" \
-  "$CODEX_DIR/agents/manager.toml" \
-  "manager" \
-  "GitHub Projects manager subagent. Use for querying project items, issues, pull requests, comments, and project fields."
-
-if [[ "$HOST_OS" == "Darwin" ]]; then
-  # Stage Claude subagents into the host Claude config before mounting
-  # $HOME/.claude. Docker Desktop cannot reliably create nested file bind
-  # mountpoints inside another bind-mounted directory.
-  stage_file_with_restore "$DEVOPS_AGENT_FILE" "$HOME/.claude/agents/devops.md"
-  stage_file_with_restore "$MANAGER_AGENT_FILE" "$HOME/.claude/agents/manager.md"
-  CLAUDE_AGENT_MOUNT_ARGS=()
-else
-  CLAUDE_AGENT_MOUNT_ARGS=(
-    -v "$DEVOPS_AGENT_FILE":/home/claude/.claude/agents/devops.md:ro
-    -v "$MANAGER_AGENT_FILE":/home/claude/.claude/agents/manager.md:ro
-  )
-fi
-
 if [[ "$#" -eq 0 ]]; then
   CONTAINER_CMD=(
     codex
@@ -232,7 +158,6 @@ docker run --rm -it \
   -v "$CODEX_DIR:$CODEX_CONTAINER_DIR" \
   -v "$HOME/.claude":/home/claude/.claude \
   -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json \
-  ${CLAUDE_AGENT_MOUNT_ARGS[@]+"${CLAUDE_AGENT_MOUNT_ARGS[@]}"} \
   ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
   ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
   "${TERMINAL_ARGS[@]}" \

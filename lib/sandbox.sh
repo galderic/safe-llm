@@ -5,47 +5,15 @@
 
 HOST_OS="${HOST_OS:-$(uname -s)}"
 SANDBOX_CLEANUP_FILES=()
-SANDBOX_STAGED_FILE_PATHS=()
-SANDBOX_STAGED_FILE_BACKUPS=()
-SANDBOX_STAGED_FILE_HAD_ORIGINAL=()
 
 register_cleanup_file() {
   SANDBOX_CLEANUP_FILES+=("$1")
-}
-
-stage_file_with_restore() {
-  local source_file="$1"
-  local target_file="$2"
-  local backup_file=""
-  local had_original=0
-
-  mkdir -p "$(dirname "$target_file")"
-  if [[ -f "$target_file" ]]; then
-    backup_file="$(mktemp "${TMPDIR:-/tmp}/safe-llm-stage.XXXXXX")"
-    cp -p "$target_file" "$backup_file"
-    had_original=1
-  fi
-
-  cp "$source_file" "$target_file"
-  SANDBOX_STAGED_FILE_PATHS+=("$target_file")
-  SANDBOX_STAGED_FILE_BACKUPS+=("$backup_file")
-  SANDBOX_STAGED_FILE_HAD_ORIGINAL+=("$had_original")
 }
 
 sandbox_cleanup() {
   if [[ -n "${DEVTOOLS_PROXY_PID:-}" ]]; then
     kill "$DEVTOOLS_PROXY_PID" >/dev/null 2>&1 || true
   fi
-
-  local index
-  for ((index=${#SANDBOX_STAGED_FILE_PATHS[@]} - 1; index >= 0; index--)); do
-    if [[ "${SANDBOX_STAGED_FILE_HAD_ORIGINAL[$index]}" == 1 ]]; then
-      cp -p "${SANDBOX_STAGED_FILE_BACKUPS[$index]}" "${SANDBOX_STAGED_FILE_PATHS[$index]}"
-      rm -f -- "${SANDBOX_STAGED_FILE_BACKUPS[$index]}"
-    else
-      rm -f -- "${SANDBOX_STAGED_FILE_PATHS[$index]}"
-    fi
-  done
 
   local path
   for path in "${SANDBOX_CLEANUP_FILES[@]}"; do
