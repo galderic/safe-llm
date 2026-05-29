@@ -10,6 +10,7 @@ LABEL org.opencontainers.image.title="safe-llm-sandbox"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/node
 ENV CODEX_HOME=/home/node/.codex
+ENV PATH="/usr/local/go/bin:$PATH"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -37,6 +38,14 @@ RUN npm install -g chrome-devtools-mcp@latest \
   && python3 -m pip install --break-system-packages --no-cache-dir uv
 
 COPY --from=github-mcp-builder /go/bin/github-mcp-server /usr/local/bin/github-mcp-server
+COPY --from=github-mcp-builder /usr/local/go /usr/local/go
+
+RUN printf '%s\n' \
+    'case ":$PATH:" in' \
+    '  *:/usr/local/go/bin:*) ;;' \
+    '  *) export PATH="/usr/local/go/bin:$PATH" ;;' \
+    'esac' \
+    > /etc/profile.d/go-path.sh
 
 RUN useradd -m -s /bin/bash claude \
   && mkdir -p /home/node/.codex /home/claude/.claude \
@@ -59,7 +68,8 @@ WORKDIR /workspace
 RUN test -x /home/claude/.local/bin/claude \
   && ln -sf /home/claude/.local/bin/claude /usr/local/bin/claude \
   && command -v claude \
-  && command -v codex
+  && command -v codex \
+  && command -v go
 
 FROM tools AS claude
 CMD ["bash"]

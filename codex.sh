@@ -185,6 +185,8 @@ docker run --rm -it \
   -v "$NODE_MODULES_VOLUME:$HOST_WORKSPACE/node_modules" \
   --user "$(id -u):$(id -g)" \
   "$IMAGE" bash -lc '
+    export PATH="/usr/local/go/bin:$PATH"
+
     start_local_host_service_proxies() {
       local ports="${SAFE_LLM_HOST_PORTS-5432}"
       if [[ -z "$ports" ]]; then

@@ -160,6 +160,8 @@ docker run -it --rm \
     "${GITHUB_AUTH_ARGS[@]}" \
     "$IMAGE" \
     bash -lc '# The container is the sandbox boundary; skip Claude Code prompts inside it by default.
+        export PATH="/usr/local/go/bin:$PATH"
+
         start_local_host_service_proxies() {
             local ports="${SAFE_LLM_HOST_PORTS-5432}"
             if [[ -z "$ports" ]]; then
