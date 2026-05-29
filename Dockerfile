@@ -17,6 +17,7 @@ RUN apt-get update \
     bash \
     ca-certificates \
     curl \
+    dnsutils \
     gh \
     git \
     hcloud-cli \
