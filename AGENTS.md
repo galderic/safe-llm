@@ -92,7 +92,6 @@ Both launchers publish common app dev ports from the container to the host on
 loopback only:
 
 ```sh
-127.0.0.1:3000 -> container:3000
 127.0.0.1:3001 -> container:3001
 127.0.0.1:5173 -> container:5173
 127.0.0.1:4173 -> container:4173
@@ -105,14 +104,18 @@ numbers or explicit Docker publish specs. Set it to an empty string to disable
 port publishing:
 
 ```sh
-SAFE_LLM_FORWARD_PORTS=3000,3002,9000 /path/to/safe-llm/codex.sh
-SAFE_LLM_FORWARD_PORTS=127.0.0.1:9000:3000 /path/to/safe-llm/claude.sh
+SAFE_LLM_FORWARD_PORTS=3002,9000 /path/to/safe-llm/codex.sh
+SAFE_LLM_FORWARD_PORTS=127.0.0.1:9000:5173 /path/to/safe-llm/claude.sh
 SAFE_LLM_FORWARD_PORTS= /path/to/safe-llm/codex.sh
 ```
 
 `SAFE_LLM_FORWARD_HOST` controls the host bind address for bare port numbers
 and defaults to `127.0.0.1`. Keep it loopback unless there is a specific reason
 to expose a sandboxed dev server on the LAN.
+
+For bare port numbers, the launchers skip any host port that is already in use
+and continue starting the sandbox. Explicit Docker publish specs are passed
+through unchanged.
 
 The process inside the container must still listen on a non-loopback interface
 such as `0.0.0.0`. For many Node projects that means running the dev server

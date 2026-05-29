@@ -128,8 +128,21 @@ setup_terminal_args() {
   fi
 }
 
+host_port_is_reachable() {
+  local host="$1"
+  local port="$2"
+
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 1 "$host" "$port" >/dev/null 2>&1
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout 1 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+  else
+    bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+  fi
+}
+
 setup_port_forward_args() {
-  local ports="${SAFE_LLM_FORWARD_PORTS-3000,3001,5173,4173,8000,8080}"
+  local ports="${SAFE_LLM_FORWARD_PORTS-3001,5173,4173,8000,8080}"
   local bind_host="${SAFE_LLM_FORWARD_HOST:-127.0.0.1}"
 
   PORT_FORWARD_ARGS=()
@@ -151,6 +164,12 @@ setup_port_forward_args() {
     if [[ "$port" == *:* ]]; then
       PORT_FORWARD_ARGS+=(-p "$port")
     else
+      if host_port_is_reachable "$bind_host" "$port"; then
+        echo "Skipping dev-server port ${bind_host}:${port}; it is already in use." >&2
+        IFS=,
+        continue
+      fi
+
       PORT_FORWARD_ARGS+=(-p "${bind_host}:${port}:${port}")
     fi
     IFS=,
