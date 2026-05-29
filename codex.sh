@@ -41,10 +41,12 @@ trap cleanup EXIT
 
 setup_ssh_args "$CONTAINER_HOME"
 setup_terminal_args
+setup_port_forward_args
 ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_host_passwd_args "$IMAGE" "$CONTAINER_HOME" codex
 
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
+setup_host_service_proxies "$IMAGE"
 
 # Docker creates named volumes as root-owned. Codex runs as the host uid/gid,
 # so normalize the dependency volume before mounting it into the workspace.
@@ -160,6 +162,7 @@ docker run --rm -it \
   -v "$CLAUDE_CONFIG_FILE":/home/claude/.claude.json \
   ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
   ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
+  ${PORT_FORWARD_ARGS[@]+"${PORT_FORWARD_ARGS[@]}"} \
   "${TERMINAL_ARGS[@]}" \
   -e HOME="$CONTAINER_HOME" \
   -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
@@ -177,10 +180,43 @@ docker run --rm -it \
   -e GITHUB_PERSONAL_ACCESS_TOKEN="${GITHUB_PERSONAL_ACCESS_TOKEN:-}" \
   -e GITHUB_MCP_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
   -e GITHUB_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
+  -e "SAFE_LLM_HOST_PORTS=${SAFE_LLM_HOST_PORTS-5432}" \
   "${GITHUB_AUTH_ARGS[@]}" \
   -v "$NODE_MODULES_VOLUME:$HOST_WORKSPACE/node_modules" \
   --user "$(id -u):$(id -g)" \
   "$IMAGE" bash -lc '
+    start_local_host_service_proxies() {
+      local ports="${SAFE_LLM_HOST_PORTS-5432}"
+      if [[ -z "$ports" ]]; then
+        return 0
+      fi
+
+      local port
+      local old_ifs="$IFS"
+      IFS=,
+      for port in $ports; do
+        IFS="$old_ifs"
+        port="${port//[[:space:]]/}"
+        if [[ -z "$port" ]]; then
+          IFS=,
+          continue
+        fi
+
+        if timeout 1 bash -c "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1; then
+          IFS=,
+          continue
+        fi
+
+        socat \
+          "TCP-LISTEN:${port},fork,reuseaddr,bind=127.0.0.1" \
+          "TCP:host.docker.internal:${port}" &
+        IFS=,
+      done
+      IFS="$old_ifs"
+    }
+
+    start_local_host_service_proxies
+
     if [[ -n "${CODEX_LINEAR_API_KEY:-}" ]]; then
       export LINEAR_API_KEY="$CODEX_LINEAR_API_KEY"
     else

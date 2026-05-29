@@ -19,6 +19,11 @@ sandbox that:
 - Bridges the host's Chrome DevTools endpoint into the container via a
   `socat` proxy so the `chrome-devtools` MCP server can drive the host
   browser from inside the sandbox.
+- Bridges selected host loopback service ports, including PostgreSQL's default
+  `5432`, so sandboxed agents can reach host services at both `localhost` and
+  `host.docker.internal`.
+- Publishes common container dev-server ports on host loopback so the host
+  Chrome instance can open apps started inside the sandbox.
 - Registers the official GitHub MCP server when a GitHub token is present,
   with a constrained default toolset that includes GitHub Projects.
 
@@ -80,6 +85,61 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex.sh
   launchers and cross-agent wrappers map the active agent's scoped value to the
   generic environment variable expected by the underlying tool
   (`LINEAR_API_KEY` or `GITHUB_PERSONAL_ACCESS_TOKEN`).
+
+### Browser access to sandbox dev servers
+
+Both launchers publish common app dev ports from the container to the host on
+loopback only:
+
+```sh
+127.0.0.1:3000 -> container:3000
+127.0.0.1:3001 -> container:3001
+127.0.0.1:5173 -> container:5173
+127.0.0.1:4173 -> container:4173
+127.0.0.1:8000 -> container:8000
+127.0.0.1:8080 -> container:8080
+```
+
+Override the list with `SAFE_LLM_FORWARD_PORTS`, using comma-separated port
+numbers or explicit Docker publish specs. Set it to an empty string to disable
+port publishing:
+
+```sh
+SAFE_LLM_FORWARD_PORTS=3000,3002,9000 /path/to/safe-llm/codex.sh
+SAFE_LLM_FORWARD_PORTS=127.0.0.1:9000:3000 /path/to/safe-llm/claude.sh
+SAFE_LLM_FORWARD_PORTS= /path/to/safe-llm/codex.sh
+```
+
+`SAFE_LLM_FORWARD_HOST` controls the host bind address for bare port numbers
+and defaults to `127.0.0.1`. Keep it loopback unless there is a specific reason
+to expose a sandboxed dev server on the LAN.
+
+The process inside the container must still listen on a non-loopback interface
+such as `0.0.0.0`. For many Node projects that means running the dev server
+with an explicit host flag, for example `npm run dev -- --host 0.0.0.0`.
+
+### Container access to host services
+
+Both launchers make selected host loopback service ports reachable from inside
+the container through both `localhost` and `host.docker.internal`. The default
+list is:
+
+```sh
+container 127.0.0.1:5432 -> host 127.0.0.1:5432
+host.docker.internal:5432  -> host 127.0.0.1:5432
+```
+
+Override the list with `SAFE_LLM_HOST_PORTS`, using comma-separated port
+numbers. Set it to an empty string to disable host service proxying:
+
+```sh
+SAFE_LLM_HOST_PORTS=5432,6379 /path/to/safe-llm/codex.sh
+SAFE_LLM_HOST_PORTS= /path/to/safe-llm/claude.sh
+```
+
+This is separate from `SAFE_LLM_FORWARD_PORTS`: host service proxying lets code
+inside the container call services running on the host, while port forwarding
+lets the host browser call services running inside the container.
 
 ### Local agent environment
 

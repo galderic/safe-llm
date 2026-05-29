@@ -20,7 +20,10 @@ RUN apt-get update \
     git \
     hcloud-cli \
     jq \
+    lsof \
+    netcat-openbsd \
     openssh-client \
+    postgresql-client \
     python3 \
     python3-pip \
     python3-venv \

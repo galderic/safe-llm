@@ -40,6 +40,7 @@ trap cleanup EXIT
 
 ensure_image_current "$IMAGE" "$REPO_ROOT" both
 setup_devtools "$IMAGE" "$CHROME_DEVTOOLS_PORT" "$DEVTOOLS_PROXY_PORT"
+setup_host_service_proxies "$IMAGE"
 ensure_chrome_devtools
 
 mkdir -p "$CODEX_DIR"
@@ -123,6 +124,7 @@ fi
 
 setup_ssh_args /home/claude
 setup_terminal_args
+setup_port_forward_args
 
 if [[ -f "$HOME/.gitconfig" ]]; then
     DOCKER_MOUNT_ARGS+=(-v "$HOME/.gitconfig":/home/claude/.gitconfig:ro)
@@ -138,6 +140,7 @@ docker run -it --rm \
     "${DOCKER_MOUNT_ARGS[@]}" \
     ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} \
     ${PASSWD_ARGS[@]+"${PASSWD_ARGS[@]}"} \
+    ${PORT_FORWARD_ARGS[@]+"${PORT_FORWARD_ARGS[@]}"} \
     "${TERMINAL_ARGS[@]}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
@@ -150,12 +153,45 @@ docker run -it --rm \
     -e GITHUB_PERSONAL_ACCESS_TOKEN="${GITHUB_PERSONAL_ACCESS_TOKEN:-}" \
     -e GITHUB_MCP_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
     -e GITHUB_TOOLSETS="$GITHUB_MCP_TOOLSETS" \
+    -e "SAFE_LLM_HOST_PORTS=${SAFE_LLM_HOST_PORTS-5432}" \
     -e HCLOUD_TOKEN="${HCLOUD_TOKEN:-}" \
     -e UV_CACHE_DIR="$UV_CACHE_DIR_CONTAINER" \
     -e UV_TOOL_DIR="$UV_TOOL_DIR_CONTAINER" \
     "${GITHUB_AUTH_ARGS[@]}" \
     "$IMAGE" \
     bash -lc '# The container is the sandbox boundary; skip Claude Code prompts inside it by default.
+        start_local_host_service_proxies() {
+            local ports="${SAFE_LLM_HOST_PORTS-5432}"
+            if [[ -z "$ports" ]]; then
+                return 0
+            fi
+
+            local port
+            local old_ifs="$IFS"
+            IFS=,
+            for port in $ports; do
+                IFS="$old_ifs"
+                port="${port//[[:space:]]/}"
+                if [[ -z "$port" ]]; then
+                    IFS=,
+                    continue
+                fi
+
+                if timeout 1 bash -c "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1; then
+                    IFS=,
+                    continue
+                fi
+
+                socat \
+                    "TCP-LISTEN:${port},fork,reuseaddr,bind=127.0.0.1" \
+                    "TCP:host.docker.internal:${port}" &
+                IFS=,
+            done
+            IFS="$old_ifs"
+        }
+
+        start_local_host_service_proxies
+
         if [[ -n "${CLAUDE_LINEAR_API_KEY:-}" ]]; then
             export LINEAR_API_KEY="$CLAUDE_LINEAR_API_KEY"
         else

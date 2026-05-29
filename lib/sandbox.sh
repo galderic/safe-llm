@@ -14,6 +14,10 @@ sandbox_cleanup() {
   if [[ -n "${DEVTOOLS_PROXY_PID:-}" ]]; then
     kill "$DEVTOOLS_PROXY_PID" >/dev/null 2>&1 || true
   fi
+  local pid
+  for pid in ${HOST_SERVICE_PROXY_PIDS:-}; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
 
   local path
   for path in "${SANDBOX_CLEANUP_FILES[@]}"; do
@@ -124,6 +128,85 @@ setup_terminal_args() {
   fi
 }
 
+setup_port_forward_args() {
+  local ports="${SAFE_LLM_FORWARD_PORTS-3000,3001,5173,4173,8000,8080}"
+  local bind_host="${SAFE_LLM_FORWARD_HOST:-127.0.0.1}"
+
+  PORT_FORWARD_ARGS=()
+  if [[ -z "$ports" ]]; then
+    return 0
+  fi
+
+  local port
+  local old_ifs="$IFS"
+  IFS=,
+  for port in $ports; do
+    IFS="$old_ifs"
+    port="${port//[[:space:]]/}"
+    if [[ -z "$port" ]]; then
+      IFS=,
+      continue
+    fi
+
+    if [[ "$port" == *:* ]]; then
+      PORT_FORWARD_ARGS+=(-p "$port")
+    else
+      PORT_FORWARD_ARGS+=(-p "${bind_host}:${port}:${port}")
+    fi
+    IFS=,
+  done
+  IFS="$old_ifs"
+}
+
+resolve_host_gateway_ip() {
+  local image="$1"
+
+  if [[ -z "${HOST_GATEWAY_IP:-}" ]]; then
+    HOST_GATEWAY_IP="$(
+      docker run --rm \
+        --add-host=host.docker.internal:host-gateway \
+        "$image" \
+        getent ahostsv4 host.docker.internal | awk '{print $1; exit}'
+    )"
+  fi
+}
+
+setup_host_service_proxies() {
+  local image="$1"
+  local ports="${SAFE_LLM_HOST_PORTS-5432}"
+
+  HOST_SERVICE_PROXY_PIDS=""
+  if [[ -z "$ports" || "$HOST_OS" != "Linux" ]]; then
+    return 0
+  fi
+
+  resolve_host_gateway_ip "$image"
+
+  local port
+  local old_ifs="$IFS"
+  IFS=,
+  for port in $ports; do
+    IFS="$old_ifs"
+    port="${port//[[:space:]]/}"
+    if [[ -z "$port" ]]; then
+      IFS=,
+      continue
+    fi
+
+    if timeout 1 bash -c "</dev/tcp/${HOST_GATEWAY_IP}/${port}" >/dev/null 2>&1; then
+      IFS=,
+      continue
+    fi
+
+    socat \
+      "TCP-LISTEN:${port},fork,reuseaddr,bind=${HOST_GATEWAY_IP}" \
+      "TCP:127.0.0.1:${port}" &
+    HOST_SERVICE_PROXY_PIDS="${HOST_SERVICE_PROXY_PIDS:+$HOST_SERVICE_PROXY_PIDS }$!"
+    IFS=,
+  done
+  IFS="$old_ifs"
+}
+
 # Portable in-place sed. BSD sed (macOS) requires an explicit suffix argument
 # after -i; passing '' means no backup file.
 sed_inplace() {
@@ -196,12 +279,7 @@ setup_devtools() {
   DEVTOOLS_PROXY_PORT="$proxy_port"
 
   if [[ "$HOST_OS" == "Linux" ]]; then
-    HOST_GATEWAY_IP="$(
-      docker run --rm \
-        --add-host=host.docker.internal:host-gateway \
-        "$image" \
-        getent ahostsv4 host.docker.internal | awk '{print $1; exit}'
-    )"
+    resolve_host_gateway_ip "$image"
     DEVTOOLS_HOST_FOR_CONTAINER="$HOST_GATEWAY_IP"
     DEVTOOLS_PORT_FOR_CONTAINER="$DEVTOOLS_PROXY_PORT"
     HOST_PROBE_URL="http://${HOST_GATEWAY_IP}:${DEVTOOLS_PROXY_PORT}/json/version"
