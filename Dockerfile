@@ -22,6 +22,7 @@ RUN apt-get update \
     git \
     hcloud-cli \
     jq \
+    libpcsclite-dev \
     lsof \
     netcat-openbsd \
     openssh-client \

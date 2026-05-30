@@ -58,6 +58,13 @@ Both scripts rebuild their image automatically when the root `Dockerfile` or
 cross-agent wrapper scripts are newer than the cached image, then start the
 agent with the current directory mounted as the workspace.
 
+The launchers also inject this repository's `AGENTS.md` into the launched
+agent's instruction context. This keeps the safe-llm sandbox rules active even
+when `claude.sh` or `codex.sh` is started from another project whose own
+`AGENTS.md` is discovered as the workspace instructions. Override the injected
+file with `SAFE_LLM_INSTRUCTIONS_FILE=/path/to/file`, or disable this injection
+with `SAFE_LLM_INCLUDE_INSTRUCTIONS=0`.
+
 To force a fresh image rebuild before launch, pass `--rebuild` as the first
 launcher argument or set `SAFE_LLM_REBUILD=1`:
 

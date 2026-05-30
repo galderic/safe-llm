@@ -27,6 +27,7 @@ fi
 CLAUDE_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/claude-config.XXXXXX")"
 register_cleanup_file "$CLAUDE_CONFIG_FILE"
 setup_github_auth_args
+load_safe_llm_instructions "$REPO_ROOT"
 
 # Path under $HOME/.claude where we stage Keychain-extracted credentials on
 # macOS (see the credentials block further below). Removed on exit so the
@@ -144,6 +145,7 @@ docker run -it --rm \
     "${TERMINAL_ARGS[@]}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e CLAUDE_PERMISSION_ARGS="$CLAUDE_PERMISSION_ARGS" \
+    -e SAFE_LLM_INSTRUCTIONS="$SAFE_LLM_INSTRUCTIONS" \
     -e CODEX_HOME="$CODEX_CONTAINER_DIR" \
     -e CODEX_CONTAINER_HOME=/home/node \
     -e CODEX_LINEAR_API_KEY="${CODEX_LINEAR_API_KEY:-}" \
@@ -202,4 +204,8 @@ docker run -it --rm \
         export GITHUB_PERSONAL_ACCESS_TOKEN="$CLAUDE_GITHUB_TOKEN"
         export GITHUB_TOOLSETS="${GITHUB_MCP_TOOLSETS}"
         read -r -a permission_args <<< "${CLAUDE_PERMISSION_ARGS}"
-        exec claude "${permission_args[@]}" "$@"' bash "$@"
+        claude_args=("${permission_args[@]}")
+        if [[ -n "${SAFE_LLM_INSTRUCTIONS:-}" ]]; then
+            claude_args+=(--append-system-prompt "$SAFE_LLM_INSTRUCTIONS")
+        fi
+        exec claude "${claude_args[@]}" "$@"' bash "$@"

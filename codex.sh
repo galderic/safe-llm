@@ -31,6 +31,10 @@ DEVTOOLS_PROXY_PORT="${DEVTOOLS_PROXY_PORT:-9223}"
 CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS:-When browser automation is needed, prefer the chrome-devtools MCP server directly when its tools are available. Do not route browser work through the Browser plugin or browser skill unless a higher-priority instruction explicitly requires it.}"
 SSH_ARGS=()
 setup_github_auth_args
+load_safe_llm_instructions "$REPO_ROOT"
+if [[ -n "$SAFE_LLM_INSTRUCTIONS" ]]; then
+  CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS="${CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS}"$'\n\n'"${SAFE_LLM_INSTRUCTIONS}"
+fi
 
 STAGED_CREDENTIALS_PATH=""
 
@@ -60,7 +64,7 @@ ensure_node_modules_volume_owner() {
 ensure_node_modules_volume_owner
 
 CODEX_CONFIG_OVERRIDES=(
-  -c "developer_instructions=\"$CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS\""
+  -c "developer_instructions=$(printf '%s' "$CODEX_SANDBOX_DEVELOPER_INSTRUCTIONS" | jq -Rs .)"
   -c 'mcp_servers.chrome-devtools.enabled=true'
   -c 'mcp_servers.chrome-devtools.required=false'
   -c 'mcp_servers.chrome-devtools.command="chrome-devtools-mcp"'

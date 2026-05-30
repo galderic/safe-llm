@@ -106,6 +106,27 @@ setup_github_auth_args() {
   )
 }
 
+load_safe_llm_instructions() {
+  local repo_root="$1"
+  local instructions_path="${SAFE_LLM_INSTRUCTIONS_FILE:-$repo_root/AGENTS.md}"
+
+  # shellcheck disable=SC2034
+  SAFE_LLM_INSTRUCTIONS=""
+  if [[ "${SAFE_LLM_INCLUDE_INSTRUCTIONS:-1}" == 0 ]]; then
+    return 0
+  fi
+
+  if [[ -f "$instructions_path" ]]; then
+    # shellcheck disable=SC2034
+    SAFE_LLM_INSTRUCTIONS="$(
+      printf 'Additional instructions from safe-llm launcher (%s):\n\n' "$instructions_path"
+      sed -n '1,$p' "$instructions_path"
+    )"
+  else
+    echo "safe-llm instructions file not found: $instructions_path" >&2
+  fi
+}
+
 setup_terminal_args() {
   local term="${SAFE_LLM_TERM:-${TERM:-xterm-256color}}"
   if [[ -z "$term" || "$term" == "dumb" || "$term" == "xterm-ghostty" ]]; then
