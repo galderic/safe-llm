@@ -299,6 +299,34 @@ setup_host_passwd_args() {
   fi
 }
 
+# Start a host-side TCP proxy. Returns success only after the proxy process is
+# still alive, so callers can recover from bind failures without using a dead
+# endpoint.
+start_tcp_proxy() {
+  local bind_host="$1"
+  local listen_port="$2"
+  local target_host="$3"
+  local target_port="$4"
+  local stderr_file="$5"
+  local proxy_pid
+
+  : > "$stderr_file"
+  socat \
+    "TCP-LISTEN:${listen_port},fork,reuseaddr,bind=${bind_host}" \
+    "TCP:${target_host}:${target_port}" \
+    2>>"$stderr_file" &
+  proxy_pid="$!"
+
+  sleep 0.1
+  if kill -0 "$proxy_pid" >/dev/null 2>&1; then
+    DEVTOOLS_PROXY_PID="$proxy_pid"
+    return 0
+  fi
+
+  wait "$proxy_pid" >/dev/null 2>&1 || true
+  return 1
+}
+
 # Pick how the container reaches the host's Chrome DevTools endpoint.
 #
 # Linux: the kernel bridge IP exposed via `--add-host=host.docker.internal:
@@ -320,14 +348,46 @@ setup_devtools() {
 
   if [[ "$HOST_OS" == "Linux" ]]; then
     resolve_host_gateway_ip "$image"
+    local proxy_stderr
+    local port_scan_count="${SAFE_LLM_DEVTOOLS_PROXY_PORT_SCAN:-20}"
+    local candidate_port
+    local last_port
+    local started_proxy=0
+
+    if ! [[ "$port_scan_count" =~ ^[0-9]+$ ]] || [[ "$port_scan_count" -lt 1 ]]; then
+      port_scan_count=1
+    fi
+    proxy_stderr="$(mktemp "${TMPDIR:-/tmp}/safe-llm-devtools-proxy.XXXXXX")"
+    register_cleanup_file "$proxy_stderr"
+
+    last_port=$((DEVTOOLS_PROXY_PORT + port_scan_count - 1))
+    for ((candidate_port = DEVTOOLS_PROXY_PORT; candidate_port <= last_port; candidate_port++)); do
+      if start_tcp_proxy "$HOST_GATEWAY_IP" "$candidate_port" 127.0.0.1 "$CHROME_DEVTOOLS_PORT" "$proxy_stderr"; then
+        DEVTOOLS_PROXY_PORT="$candidate_port"
+        started_proxy=1
+        break
+      fi
+
+      if [[ "$candidate_port" -eq "$proxy_port" ]]; then
+        echo "DevTools proxy port ${HOST_GATEWAY_IP}:${candidate_port} is unavailable; trying another port." >&2
+      fi
+    done
+
+    if [[ "$started_proxy" != 1 ]]; then
+      echo "Could not start a DevTools proxy on ${HOST_GATEWAY_IP}:${proxy_port}-${last_port}." >&2
+      if [[ -s "$proxy_stderr" ]]; then
+        tail -n 3 "$proxy_stderr" >&2
+      fi
+      exit 1
+    fi
+
+    if [[ "$DEVTOOLS_PROXY_PORT" != "$proxy_port" ]]; then
+      echo "Using DevTools proxy port ${HOST_GATEWAY_IP}:${DEVTOOLS_PROXY_PORT}." >&2
+    fi
+
     DEVTOOLS_HOST_FOR_CONTAINER="$HOST_GATEWAY_IP"
     DEVTOOLS_PORT_FOR_CONTAINER="$DEVTOOLS_PROXY_PORT"
     HOST_PROBE_URL="http://${HOST_GATEWAY_IP}:${DEVTOOLS_PROXY_PORT}/json/version"
-
-    socat \
-      "TCP-LISTEN:${DEVTOOLS_PROXY_PORT},fork,reuseaddr,bind=${HOST_GATEWAY_IP}" \
-      "TCP:127.0.0.1:${CHROME_DEVTOOLS_PORT}" &
-    DEVTOOLS_PROXY_PID="$!"
   elif [[ "$HOST_OS" == "Darwin" ]]; then
     DOCKER_DESKTOP_HOST_IP="$(
       docker run --rm \
@@ -358,6 +418,318 @@ probe_devtools() {
   return 1
 }
 
+is_ssh_session() {
+  [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" || -n "${SSH_TTY:-}" ]]
+}
+
+infer_x_display_from_socket() {
+  local socket
+  for socket in /tmp/.X11-unix/X*; do
+    if [[ -S "$socket" ]]; then
+      printf ':%s\n' "${socket##*/X}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+export_from_process_environ() {
+  local pid="$1"
+  local key="$2"
+  local line
+
+  if [[ ! -r "/proc/${pid}/environ" ]]; then
+    return 1
+  fi
+
+  line="$(tr '\0' '\n' < "/proc/${pid}/environ" | sed -n "s/^${key}=//p" | head -n 1)"
+  if [[ -z "$line" ]]; then
+    return 1
+  fi
+
+  declare -gx "$key=$line"
+}
+
+set_default_xdg_runtime_dir() {
+  local runtime_dir
+  runtime_dir="/run/user/$(id -u)"
+  if [[ -z "${XDG_RUNTIME_DIR:-}" && -d "$runtime_dir" ]]; then
+    XDG_RUNTIME_DIR="$runtime_dir"
+    export XDG_RUNTIME_DIR
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR:-}/bus" ]]; then
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+    export DBUS_SESSION_BUS_ADDRESS
+  fi
+}
+
+export_env_line_if_missing() {
+  local line="$1"
+  local key="${line%%=*}"
+  local value="${line#*=}"
+
+  if [[ "$line" != *=* || -z "$key" || -n "${!key:-}" || -z "$value" ]]; then
+    return 1
+  fi
+
+  declare -gx "$key=$value"
+}
+
+adopt_systemd_user_env() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  set_default_xdg_runtime_dir
+
+  local environment
+  environment="$(systemctl --user show-environment 2>/dev/null || true)"
+  if [[ -z "$environment" ]]; then
+    return 1
+  fi
+
+  local line
+  local adopted=0
+  while IFS= read -r line; do
+    case "$line" in
+      DISPLAY=*|XAUTHORITY=*|XDG_RUNTIME_DIR=*|WAYLAND_DISPLAY=*|DBUS_SESSION_BUS_ADDRESS=*)
+        export_env_line_if_missing "$line" && adopted=1
+        ;;
+    esac
+  done <<< "$environment"
+
+  [[ "$adopted" == 1 ]]
+}
+
+adopt_process_env_for_display() {
+  local wanted_display="${DISPLAY:-}"
+  if [[ -z "$wanted_display" ]]; then
+    return 1
+  fi
+
+  local current_uid
+  current_uid="$(id -u)"
+
+  local environ
+  local pid
+  local proc_uid
+  local proc_env
+  local key
+  local value
+  local adopted=0
+  for environ in /proc/[0-9]*/environ; do
+    [[ -r "$environ" ]] || continue
+    pid="${environ#/proc/}"
+    pid="${pid%%/*}"
+    proc_uid="$(stat -c %u "/proc/$pid" 2>/dev/null || true)"
+    [[ "$proc_uid" == "$current_uid" ]] || continue
+
+    proc_env="$(tr '\0' '\n' < "$environ" 2>/dev/null || true)"
+    if ! grep -Fxq "DISPLAY=$wanted_display" <<< "$proc_env"; then
+      continue
+    fi
+
+    for key in XAUTHORITY XDG_RUNTIME_DIR WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS; do
+      if [[ -n "${!key:-}" ]]; then
+        continue
+      fi
+      value="$(sed -n "s/^${key}=//p" <<< "$proc_env" | head -n 1)"
+      if [[ -n "$value" ]]; then
+        declare -gx "$key=$value"
+        adopted=1
+      fi
+    done
+
+    if [[ -n "${XAUTHORITY:-}" && -r "$XAUTHORITY" ]]; then
+      return 0
+    fi
+  done
+
+  [[ "$adopted" == 1 ]]
+}
+
+adopt_graphical_session_env() {
+  if ! command -v loginctl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local session_id="${SAFE_LLM_HOST_GRAPHICAL_SESSION:-}"
+  if [[ -z "$session_id" ]]; then
+    session_id="$(loginctl show-user "$(id -u)" -p Display --value 2>/dev/null || true)"
+  fi
+  if [[ -z "$session_id" ]]; then
+    session_id="$(
+      loginctl list-sessions --no-legend 2>/dev/null \
+        | awk -v uid="$(id -u)" '$2 == uid && $4 ~ /^seat/ { print $1; exit }'
+    )"
+  fi
+  if [[ -z "$session_id" ]]; then
+    return 1
+  fi
+
+  local remote
+  remote="$(loginctl show-session "$session_id" -p Remote --value 2>/dev/null || true)"
+  if [[ "$remote" == "yes" ]]; then
+    return 1
+  fi
+
+  local display
+  display="$(loginctl show-session "$session_id" -p Display --value 2>/dev/null || true)"
+  if [[ -n "$display" && -z "${DISPLAY:-}" ]]; then
+    DISPLAY="$display"
+    export DISPLAY
+  fi
+
+  local leader
+  leader="$(loginctl show-session "$session_id" -p Leader --value 2>/dev/null || true)"
+  if [[ -n "$leader" && -r "/proc/${leader}/environ" ]]; then
+    if [[ -z "${DISPLAY:-}" ]]; then
+      export_from_process_environ "$leader" DISPLAY || true
+    fi
+    if [[ -z "${XAUTHORITY:-}" ]]; then
+      export_from_process_environ "$leader" XAUTHORITY || true
+    fi
+    if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+      export_from_process_environ "$leader" XDG_RUNTIME_DIR || true
+    fi
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+      export_from_process_environ "$leader" WAYLAND_DISPLAY || true
+    fi
+    if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+      export_from_process_environ "$leader" DBUS_SESSION_BUS_ADDRESS || true
+    fi
+  fi
+
+  [[ -n "${DISPLAY:-}" ]]
+}
+
+infer_xauthority_from_x_server() {
+  local wanted_display="${DISPLAY:-}"
+  if [[ -z "$wanted_display" ]]; then
+    return 1
+  fi
+
+  local cmdline
+  local args
+  local i
+  local has_display
+  local auth_file
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [[ -r "$cmdline" ]] || continue
+    mapfile -d '' -t args < "$cmdline" || continue
+    [[ "${#args[@]}" -gt 0 ]] || continue
+    case "${args[0]}" in
+      *Xorg*|*Xwayland*|*/X)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    has_display=0
+    auth_file=""
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      if [[ "${args[$i]}" == "$wanted_display" ]]; then
+        has_display=1
+      elif [[ "${args[$i]}" == "-auth" ]] && ((i + 1 < ${#args[@]})); then
+        auth_file="${args[$((i + 1))]}"
+      fi
+    done
+
+    if [[ "$has_display" == 1 && -n "$auth_file" && -r "$auth_file" ]]; then
+      printf '%s\n' "$auth_file"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+infer_xauthority_from_files() {
+  set_default_xdg_runtime_dir
+
+  local candidate
+  local candidates=()
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    candidates+=(
+      "$XDG_RUNTIME_DIR"/.mutter-Xwaylandauth.*
+      "$XDG_RUNTIME_DIR"/*/Xauthority
+      "$XDG_RUNTIME_DIR"/*Xauthority*
+      "$XDG_RUNTIME_DIR"/.Xauthority
+    )
+  fi
+  candidates+=("$HOME/.Xauthority")
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" && -r "$candidate" && -s "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+setup_host_xauthority_for_chrome() {
+  if [[ -n "${SAFE_LLM_HOST_XAUTHORITY:-}" ]]; then
+    XAUTHORITY="$SAFE_LLM_HOST_XAUTHORITY"
+    export XAUTHORITY
+  fi
+
+  if [[ -n "${XAUTHORITY:-}" && -r "$XAUTHORITY" ]]; then
+    return 0
+  fi
+
+  local auth_file
+  auth_file="$(infer_xauthority_from_x_server || infer_xauthority_from_files || true)"
+  if [[ -n "$auth_file" ]]; then
+    XAUTHORITY="$auth_file"
+    export XAUTHORITY
+  fi
+}
+
+setup_host_display_for_chrome() {
+  if [[ "$HOST_OS" != "Linux" ]]; then
+    return 0
+  fi
+
+  if [[ "${SAFE_LLM_HOST_DISPLAY:-}" == "none" || "${SAFE_LLM_HOST_DISPLAY:-}" == "0" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${SAFE_LLM_HOST_DISPLAY:-}" ]]; then
+    DISPLAY="$SAFE_LLM_HOST_DISPLAY"
+    export DISPLAY
+  elif is_ssh_session; then
+    set_default_xdg_runtime_dir
+    adopt_systemd_user_env || true
+    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+      adopt_graphical_session_env || DISPLAY="$(infer_x_display_from_socket || true)"
+    fi
+    if [[ -n "${DISPLAY:-}" ]]; then
+      export DISPLAY
+    fi
+  fi
+
+  if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    adopt_systemd_user_env || true
+    if [[ -n "${DISPLAY:-}" ]]; then
+      adopt_process_env_for_display || true
+      setup_host_xauthority_for_chrome
+    fi
+  fi
+
+  if [[ -n "${DISPLAY:-}" ]] && is_ssh_session; then
+    if [[ -n "${XAUTHORITY:-}" ]]; then
+      echo "Using host graphical display ${DISPLAY} for Chrome launched from SSH with XAUTHORITY=${XAUTHORITY}." >&2
+    else
+      echo "Using host graphical display ${DISPLAY} for Chrome launched from SSH." >&2
+    fi
+  elif [[ -n "${WAYLAND_DISPLAY:-}" ]] && is_ssh_session; then
+    echo "Using host Wayland display ${WAYLAND_DISPLAY} for Chrome launched from SSH." >&2
+  fi
+}
+
 # Launch Chrome with remote debugging on $CHROME_DEVTOOLS_PORT. A dedicated
 # --user-data-dir is required because Chrome forwards command-line flags to any
 # already-running instance and silently ignores --remote-debugging-port when it
@@ -365,6 +737,10 @@ probe_devtools() {
 start_chrome() {
   local profile_dir="${CHROME_DEBUG_PROFILE_DIR:-${TMPDIR:-/tmp}/chrome-devtools-profile-${CHROME_DEVTOOLS_PORT}}"
   mkdir -p "$profile_dir"
+  if [[ -z "${CHROME_START_LOG:-}" ]]; then
+    CHROME_START_LOG="$(mktemp "${TMPDIR:-/tmp}/safe-llm-chrome.XXXXXX.log")"
+    register_cleanup_file "$CHROME_START_LOG"
+  fi
 
   if [[ "$HOST_OS" == "Darwin" ]]; then
     local chrome_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -375,10 +751,11 @@ start_chrome() {
     "$chrome_bin" \
       --remote-debugging-port="$CHROME_DEVTOOLS_PORT" \
       --user-data-dir="$profile_dir" \
-      >/dev/null 2>&1 &
+      >"$CHROME_START_LOG" 2>&1 &
     disown || true
   else
     local chrome_bin
+    local chrome_display_args=()
     for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
       if command -v "$candidate" >/dev/null 2>&1; then
         chrome_bin="$candidate"
@@ -389,10 +766,15 @@ start_chrome() {
       echo "Could not find a Chrome/Chromium binary on PATH." >&2
       return 1
     fi
+    setup_host_display_for_chrome
+    if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]]; then
+      chrome_display_args+=(--ozone-platform=wayland)
+    fi
     "$chrome_bin" \
+      "${chrome_display_args[@]}" \
       --remote-debugging-port="$CHROME_DEVTOOLS_PORT" \
       --user-data-dir="$profile_dir" \
-      >/dev/null 2>&1 &
+      >"$CHROME_START_LOG" 2>&1 &
     disown || true
   fi
 }
@@ -415,8 +797,9 @@ ensure_chrome_devtools() {
 
     if [[ "$devtools_ready" != 1 ]]; then
       echo "Chrome DevTools still not reachable at ${HOST_PROBE_URL} after launching Chrome." >&2
-      if [[ "$HOST_OS" == "Linux" ]]; then
-        echo "If Chrome is listening on all interfaces, set DEVTOOLS_PROXY_PORT to a free port and update the MCP browser URL to match." >&2
+      if [[ -n "${CHROME_START_LOG:-}" && -s "$CHROME_START_LOG" ]]; then
+        echo "Chrome startup log:" >&2
+        tail -n 20 "$CHROME_START_LOG" >&2
       fi
       exit 1
     fi

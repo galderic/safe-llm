@@ -81,7 +81,14 @@ SAFE_LLM_REBUILD=1 /path/to/safe-llm/codex.sh
 - Docker.
 - Chrome running with `--remote-debugging-port=9222` (or override via
   `CHROME_DEVTOOLS_PORT` / `DEVTOOLS_PROXY_PORT`) if you want the
-  `chrome-devtools` MCP to work.
+  `chrome-devtools` MCP to work. On Linux, if the requested
+  `DEVTOOLS_PROXY_PORT` is busy, the launchers scan upward for a free port;
+  override the scan length with `SAFE_LLM_DEVTOOLS_PROXY_PORT_SCAN`.
+- On Linux, when launching from an SSH session without `DISPLAY` (for example
+  from a mobile SSH client), the launchers try to reuse the host's active local
+  graphical display for Chrome. Override with `SAFE_LLM_HOST_DISPLAY=:0` and,
+  if needed, `SAFE_LLM_HOST_XAUTHORITY=/path/to/Xauthority`. Set
+  `SAFE_LLM_HOST_DISPLAY=none` to disable this fallback.
 - Agent-scoped GitHub credentials in the environment. `claude.sh` requires
   `CLAUDE_GITHUB_TOKEN`; `codex.sh` requires `CODEX_GITHUB_TOKEN`.
 - A host-side login for the agent you're launching (`~/.claude` or
