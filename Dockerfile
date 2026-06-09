@@ -26,6 +26,7 @@ RUN apt-get update \
     lsof \
     netcat-openbsd \
     openssh-client \
+    poppler-utils \
     postgresql-client \
     python3 \
     python3-pip \
@@ -34,6 +35,7 @@ RUN apt-get update \
     shellcheck \
     socat \
     strace \
+    xdotool \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g chrome-devtools-mcp@latest \
